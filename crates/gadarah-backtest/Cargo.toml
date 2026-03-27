@@ -1,0 +1,21 @@
+[package]
+name = "gadarah-backtest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gadarah-core = { path = "../gadarah-core" }
+gadarah-risk = { path = "../gadarah-risk" }
+gadarah-broker = { path = "../gadarah-broker" }
+gadarah-data = { path = "../gadarah-data" }
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

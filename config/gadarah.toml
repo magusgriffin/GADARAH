@@ -1,0 +1,41 @@
+[engine]
+mode = "challenge"
+symbols = ["GBPUSD", "EURUSD", "XAUUSD"]
+log_level = "info"
+db_path = "data/gadarah.db"
+
+[risk]
+base_risk_pct = 0.75
+max_portfolio_heat = 2.0
+daily_stop_pct = 1.5
+daily_target_pct = 2.0
+
+[kill_switch]
+daily_dd_trigger_pct = 95.0
+total_dd_trigger_pct = 95.0
+consecutive_loss_limit = 3
+cooldown_minutes = 30
+
+[equity_curve]
+ma_period = 20
+below_ma_mult = 0.50
+deep_below_mult = 0.25
+deep_threshold_pct = 2.0
+
+[pyramid]
+enabled = false
+min_r_to_add = 1.0
+max_layers = 2
+add_size_fraction = 0.5
+
+[drift]
+min_trades = 20
+win_rate_alert_delta = 0.12
+win_rate_halt_delta = 0.20
+avg_r_halt = -0.10
+slippage_alert_mult = 2.0
+
+[execution]
+max_spread_atr_ratio = 0.30
+stale_price_seconds = 2
+min_net_rr = 1.2
