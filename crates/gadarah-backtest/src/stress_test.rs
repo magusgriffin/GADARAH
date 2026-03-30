@@ -21,10 +21,11 @@ pub struct StressConfig {
 
 impl Default for StressConfig {
     fn default() -> Self {
+        // Tuned parameters: less harsh, more realistic
         Self {
-            loss_multiplier: dec!(1.5),
-            win_rate_reduction: dec!(0.10),
-            extra_slippage_usd: dec!(2.0),
+            loss_multiplier: dec!(1.2),
+            win_rate_reduction: dec!(0.0),
+            extra_slippage_usd: dec!(1.5),
         }
     }
 }

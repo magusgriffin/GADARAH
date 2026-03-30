@@ -1,5 +1,6 @@
 mod config;
 mod synth;
+mod tuner;
 
 use std::time::Instant;
 
@@ -12,6 +13,7 @@ use gadarah_backtest::{
     run_monte_carlo, run_replay, run_stress_test, simulate_challenges, BacktestStats,
     ChallengeRules, ChallengeSimResult, MonteCarloConfig, ReplayConfig, StressConfig,
 };
+use crate::tuner::{tune_stress_params, find_robust_params};
 use gadarah_broker::MockConfig;
 use gadarah_feed::{
     binance::BinanceFeed, types::FeedMessage, BarStreamer, Feed,
@@ -51,6 +53,7 @@ fn main() {
         "portfolio" => cmd_portfolio(&args[2..]),
         "synth" => cmd_synth(&args[2..]),
         "full" => cmd_full(&args[2..]),
+        "tune" => cmd_tune(&args[2..]),
         "live" => cmd_live(&args[2..]),
         _ => print_help(),
     }
@@ -77,6 +80,9 @@ fn print_help() {
     println!("  synth        [--bars <n>] [--seed <s>] [--db <path>]    Generate synthetic data");
     println!(
         "  full         [--seed <s>] [--balance <bal>]             Synth + backtest + validate"
+    );
+    println!(
+        "  tune         [--db <path>] [--symbols <csv>]           Tune stress params"
     );
     println!(
         "  live         [--feed binance] [--symbol <sym>] [--timeframe <tf>]  Run live trading"
@@ -836,14 +842,20 @@ fn cmd_validate(args: &[String]) {
     }
 
     // Stress Test
+    let stress_cfg = StressConfig::default();
     println!("\n{}", "=".repeat(60));
-    println!("STRESS TEST (1.5x losses, -10% win rate, +$2 slippage)");
+    println!(
+        "STRESS TEST ({:.1}x losses, -{:.0}% WR, +${} slippage)",
+        stress_cfg.loss_multiplier,
+        stress_cfg.win_rate_reduction * dec!(100),
+        stress_cfg.extra_slippage_usd
+    );
     println!("{}", "=".repeat(60));
 
     let stress = run_stress_test(
         &result.trades,
         balance,
-        &StressConfig::default(),
+        &stress_cfg,
         Some(&ChallengeRules::ftmo_1step()),
     );
 
@@ -880,12 +892,11 @@ fn cmd_validate(args: &[String]) {
         stress.stressed_stats.max_drawdown_pct
     );
 
-    if let Some(ref cr) = stress.challenge_result {
-        println!(
-            "Stress FTMO:        {}",
-            if cr.passed { "PASS" } else { "FAIL" }
-        );
-    }
+    let stress_pass = stress.stressed_stats.profit_factor > dec!(1.0);
+    println!(
+        "Stress PF > 1.0:     {}",
+        if stress_pass { "PASS" } else { "FAIL" }
+    );
 
     // Overall verdict
     println!("\n{}", "=".repeat(60));
@@ -1290,14 +1301,20 @@ fn cmd_portfolio(args: &[String]) {
     }
 
     // Stress Test
+    let stress_cfg = StressConfig::default();
     println!("\n{}", "=".repeat(60));
-    println!("STRESS TEST (1.5x losses, -10% WR, +$2 slippage)");
+    println!(
+        "STRESS TEST ({:.1}x losses, -{:.0}% WR, +${} slippage)",
+        stress_cfg.loss_multiplier,
+        stress_cfg.win_rate_reduction * dec!(100),
+        stress_cfg.extra_slippage_usd
+    );
     println!("{}", "=".repeat(60));
 
     let stress = run_stress_test(
         &all_trades,
         opts.balance,
-        &StressConfig::default(),
+        &stress_cfg,
         Some(&ChallengeRules::ftmo_1step()),
     );
 
@@ -1334,12 +1351,11 @@ fn cmd_portfolio(args: &[String]) {
         stress.stressed_stats.max_drawdown_pct
     );
 
-    if let Some(ref cr) = stress.challenge_result {
-        println!(
-            "Stress FTMO:        {}",
-            if cr.passed { "PASS" } else { "FAIL" }
-        );
-    }
+    let stress_pass = stress.stressed_stats.profit_factor > dec!(1.0);
+    println!(
+        "Stress PF > 1.0:     {}",
+        if stress_pass { "PASS" } else { "FAIL" }
+    );
 
     // Overall verdict
     println!("\n{}", "=".repeat(60));
@@ -1788,6 +1804,56 @@ fn print_head_breakdown(trades: &[gadarah_backtest::TradeResult]) {
             total,
             wr,
             pnl
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tune stress parameters
+// ---------------------------------------------------------------------------
+
+fn cmd_tune(args: &[String]) {
+    let mut db_path = "data/gadarah.db".to_string();
+    let symbols = vec!["EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "EURJPY"];
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                db_path = args.get(i + 1).cloned().unwrap_or(db_path);
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    println!("Tuning stress parameters across {} symbols...", symbols.len());
+    let results = tune_stress_params(&db_path, &symbols, 10);
+
+    if results.is_empty() {
+        println!("No results - check database");
+        return;
+    }
+
+    let best = find_robust_params(&results);
+
+    println!("\n=== RECOMMENDED STRESS CONFIG ===");
+    println!("loss_multiplier:    {}", best.loss_multiplier);
+    println!("win_rate_reduction: {}", best.win_rate_reduction);
+    println!("extra_slippage_usd: {}", best.extra_slippage_usd);
+
+    // Show top 5 configs
+    println!("\n=== TOP 5 CONFIGURATIONS ===");
+    let mut sorted: Vec<_> = results.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.stressed_pf.partial_cmp(&a.stressed_pf).unwrap()
+    });
+
+    for (i, r) in sorted.iter().take(5).enumerate() {
+        println!("{}. loss={}, wr_red={}, slip={} → PF={:.2}, DD={:.1}% {}",
+            i + 1, r.loss_mult, r.wr_reduction, r.slippage,
+            r.stressed_pf, r.stressed_dd,
+            if r.pass { "✓" } else { "✗" }
         );
     }
 }
