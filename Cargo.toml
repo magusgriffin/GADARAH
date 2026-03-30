@@ -6,6 +6,8 @@ members = [
     "crates/gadarah-broker",
     "crates/gadarah-data",
     "crates/gadarah-backtest",
+    "crates/gadarah-cli",
+    "crates/gadarah-feed",
 ]
 
 [workspace.dependencies]
@@ -25,6 +27,8 @@ prost-build = "0.13"
 proptest = "1"
 rand = "0.8"
 thiserror = "2"
+bytes = "1.5"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

@@ -1,26 +1,18 @@
 [package]
-name = "gadarah-broker"
+name = "gadarah-feed"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 gadarah-core = { path = "../gadarah-core" }
-gadarah-risk = { path = "../gadarah-risk" }
 rust_decimal = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 tokio = { workspace = true }
-tokio-rustls = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-prost = { workspace = true }
-bytes = { workspace = true }
-futures-util = { workspace = true }
-
-[build-dependencies]
-prost-build = { workspace = true }
-
-[dev-dependencies]
-proptest = { workspace = true }
+chrono = { workspace = true }
+url = "2"

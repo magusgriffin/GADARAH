@@ -1,11 +1,11 @@
 [engine]
 mode = "challenge"
-symbols = ["GBPUSD", "EURUSD", "XAUUSD"]
+symbols = ["EURUSD"]
 log_level = "info"
 db_path = "data/gadarah.db"
 
 [risk]
-base_risk_pct = 0.75
+base_risk_pct = 0.74
 max_portfolio_heat = 2.0
 daily_stop_pct = 1.5
 daily_target_pct = 2.0
