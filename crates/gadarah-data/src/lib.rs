@@ -1,6 +1,7 @@
 pub mod aggregator;
 pub mod csv_import;
 pub mod db;
+pub mod downloader;
 pub mod error;
 pub mod schema;
 pub mod store;
@@ -9,6 +10,7 @@ pub mod trades;
 pub use aggregator::{aggregate_bars, MultiTfAggregator, MultiTfOutput, StreamAggregator};
 pub use csv_import::{import_csv, CsvFormat};
 pub use db::Database;
+pub use downloader::{DataDownloader, DataSource, DownloadConfig, quick_download};
 pub use error::DataError;
 pub use store::{
     bar_time_range, count_bars, delete_bars, insert_bar, insert_bars, list_symbols,

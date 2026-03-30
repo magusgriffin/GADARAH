@@ -5,6 +5,15 @@ pub enum DataError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("Database error: {0}")]
+    Database(String),
+
+    #[error("Download error: {0}")]
+    Download(String),
+
+    #[error("Parse error: {0}")]
+    Parse(String),
+
     #[error("No bars found for {symbol} {timeframe}")]
     NoBars { symbol: String, timeframe: String },
 

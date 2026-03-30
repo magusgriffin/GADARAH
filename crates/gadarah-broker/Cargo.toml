@@ -18,6 +18,10 @@ thiserror = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tungstenite = { workspace = true }
+rustls = { workspace = true }
+rand = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

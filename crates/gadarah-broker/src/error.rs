@@ -24,6 +24,12 @@ pub enum BrokerError {
     #[error("Symbol not found: {0}")]
     SymbolNotFound(String),
 
+    #[error("No data: {0}")]
+    NoData(String),
+
+    #[error("Invalid symbol: {0}")]
+    InvalidSymbol(String),
+
     #[error("Timeout waiting for {operation}")]
     Timeout { operation: String },
 

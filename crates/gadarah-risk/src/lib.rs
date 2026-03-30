@@ -3,6 +3,7 @@ pub mod consistency;
 pub mod daily_pnl;
 pub mod drift;
 pub mod equity_curve;
+pub mod execution;
 pub mod kill_switch;
 pub mod performance_ledger;
 pub mod pyramid;
@@ -17,6 +18,7 @@ pub use consistency::ConsistencyTracker;
 pub use daily_pnl::{DailyPnlConfig, DailyPnlEngine, DayState};
 pub use drift::{DriftBenchmarks, DriftConfig, DriftDetector, DriftSignal, TradeResult};
 pub use equity_curve::{EquityCurveFilter, EquityCurveFilterConfig};
+pub use execution::{ExecutionConfig, ExecutionEngine, ExecutionResult, FillRecord, FillStats};
 pub use kill_switch::KillSwitch;
 pub use performance_ledger::{PerformanceLedger, SegmentStats};
 pub use pyramid::{
