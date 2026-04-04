@@ -601,9 +601,16 @@ async fn do_reconcile(inner: Arc<CtraderInner>) -> Result<ReconcileResult, Broke
     };
     let res: ProtoOaReconcileRes = request(&inner, PT_RECONCILE_REQ, &rec_req, "reconcile").await?;
 
+    let open_position_ids: Vec<u64> = res
+        .position
+        .iter()
+        .map(|p| p.position_id as u64)
+        .collect();
+
     let result = ReconcileResult {
         open_position_count: res.position.len(),
         pending_order_count: res.order.len(),
+        open_position_ids,
     };
 
     info!(

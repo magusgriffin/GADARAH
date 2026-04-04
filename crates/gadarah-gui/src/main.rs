@@ -347,6 +347,26 @@ impl eframe::App for GadarahApp {
 
 fn main() -> eframe::Result<()> {
     let state = Arc::new(Mutex::new(SharedState::default()));
+
+    // If --state-file <path> is passed, spawn a background thread that re-reads
+    // the CLI-written JSON snapshot every second and updates SharedState.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--state-file") {
+        if let Some(path) = args.get(pos + 1) {
+            let path = path.clone();
+            let state_bg = Arc::clone(&state);
+            std::thread::spawn(move || loop {
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        let mut s = state_bg.lock().unwrap();
+                        apply_state_snapshot(&mut s, &val);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            });
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
@@ -359,4 +379,59 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(GadarahApp::new(cc, state)))),
     )
+}
+
+/// Apply a JSON state snapshot (written by the CLI live loop) to SharedState.
+fn apply_state_snapshot(s: &mut SharedState, v: &serde_json::Value) {
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    let dec = |key: &str| -> Decimal {
+        v[key].as_str().and_then(|s| Decimal::from_str(s).ok()).unwrap_or(Decimal::ZERO)
+    };
+
+    s.balance    = dec("balance");
+    s.equity     = dec("equity");
+    s.free_margin = dec("free_margin");
+    s.daily_pnl  = dec("daily_pnl");
+
+    s.kill_switch_active = v["kill_switch_active"].as_bool().unwrap_or(false);
+    if s.kill_switch_active && s.kill_switch_reason.is_none() {
+        s.kill_switch_reason = Some("DD threshold breached".to_string());
+    } else if !s.kill_switch_active {
+        s.kill_switch_reason = None;
+    }
+
+    s.connection_status = if v["kill_switch_active"].is_boolean() {
+        gadarah_gui::state::ConnectionStatus::ConnectedDemo
+    } else {
+        gadarah_gui::state::ConnectionStatus::Disconnected
+    };
+
+    // Update positions from snapshot
+    if let Some(positions) = v["positions"].as_array() {
+        s.positions.clear();
+        for p in positions {
+            use gadarah_core::Direction;
+            let direction = match p["direction"].as_str().unwrap_or("Buy") {
+                "Sell" => Direction::Sell,
+                _ => Direction::Buy,
+            };
+            let dec_field = |key: &str| -> Decimal {
+                p[key].as_str().and_then(|s| Decimal::from_str(s).ok()).unwrap_or(Decimal::ZERO)
+            };
+            s.positions.push(gadarah_gui::state::Position {
+                id: p["position_id"].as_u64().unwrap_or(0),
+                symbol: p["symbol"].as_str().unwrap_or("").to_string(),
+                direction,
+                lots: dec_field("lots"),
+                entry_price: dec_field("entry"),
+                current_price: dec_field("entry"),
+                unrealized_pnl: Decimal::ZERO,
+                stop_loss: Some(dec_field("sl")),
+                take_profit: Some(dec_field("tp")),
+                opened_at: p["opened_at"].as_i64().unwrap_or(0),
+            });
+        }
+    }
 }

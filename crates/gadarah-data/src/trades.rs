@@ -130,6 +130,16 @@ pub fn close_trade(conn: &Connection, close: &TradeClose) -> Result<(), DataErro
     Ok(())
 }
 
+/// Count unclosed (open) trades for an account. Used for crash-recovery orphan detection.
+pub fn load_unclosed_trade_count(conn: &Connection, account_id: i64) -> Result<usize, DataError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM trades WHERE account_id = ?1 AND closed_at IS NULL",
+        params![account_id],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 /// Load all trades for an account, ordered by opened_at.
 pub fn load_trades(conn: &Connection, account_id: i64) -> Result<Vec<TradeRecord>, DataError> {
     let mut stmt = conn.prepare_cached(

@@ -10,6 +10,7 @@ use std::path::Path;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use serde_json;
 
 use crate::config::load_config;
 use crate::tuner::{find_robust_params, tune_stress_params};
@@ -56,6 +57,19 @@ fn main() {
             eprintln!("Unknown command: {cmd}");
             print_help();
         }
+    }
+}
+
+/// Send a notification to a Discord channel via webhook.
+/// URL is read from the `GADARAH_DISCORD_WEBHOOK` environment variable.
+/// Silently does nothing if the variable is unset or the request fails.
+pub fn notify_discord(msg: &str) {
+    let Ok(url) = std::env::var("GADARAH_DISCORD_WEBHOOK") else {
+        return;
+    };
+    let body = serde_json::json!({ "content": msg });
+    if let Err(err) = ureq::post(&url).send_json(body) {
+        tracing::warn!("Discord notification failed: {err}");
     }
 }
 

@@ -37,6 +37,9 @@ pub struct ComplianceConfig {
     pub recent_baseline_trades: usize,
     pub max_lot_jump_vs_median: Decimal,
     pub max_risk_jump_vs_median: Decimal,
+    /// Maximum allowable spread in pips at entry time. None = no limit.
+    /// FundingPips enforces ≤ 1.0 pip on all entries.
+    pub max_spread_pips: Option<Decimal>,
 }
 
 /// Backwards-compatible alias for existing code referencing the old name.
@@ -52,6 +55,7 @@ impl Default for ComplianceConfig {
             recent_baseline_trades: 5,
             max_lot_jump_vs_median: dec!(2.5),
             max_risk_jump_vs_median: dec!(2.0),
+            max_spread_pips: None,
         }
     }
 }
@@ -187,6 +191,11 @@ impl PropFirmComplianceManager {
 
     pub fn set_blackout_windows(&mut self, blackout_windows: Vec<ComplianceBlackoutWindow>) {
         self.blackout_windows = blackout_windows;
+    }
+
+    /// Returns the maximum allowed spread in pips for this firm, or None if unlimited.
+    pub fn max_spread_pips(&self) -> Option<Decimal> {
+        self.config.max_spread_pips
     }
 
     pub fn evaluate_entry(
@@ -482,6 +491,7 @@ fn detect_program(firm: &FirmConfig) -> FirmProgram {
 fn config_for_program(program: FirmProgram) -> ComplianceConfig {
     match program {
         // FundingPips: strictest pacing — known to flag rapid entries
+        // Also enforces max 1.0 pip spread per their TOS.
         FirmProgram::FundingPipsOneStep
         | FirmProgram::FundingPipsTwoStep
         | FirmProgram::FundingPipsTwoStepPro
@@ -493,6 +503,7 @@ fn config_for_program(program: FirmProgram) -> ComplianceConfig {
             recent_baseline_trades: 5,
             max_lot_jump_vs_median: dec!(2.5),
             max_risk_jump_vs_median: dec!(2.0),
+            max_spread_pips: Some(dec!(1.0)),
         },
 
         // FTMO: tight lot-jump and risk-consistency rules.
@@ -506,6 +517,7 @@ fn config_for_program(program: FirmProgram) -> ComplianceConfig {
             recent_baseline_trades: 5,
             max_lot_jump_vs_median: dec!(2.0), // stricter than FP
             max_risk_jump_vs_median: dec!(1.5), // stricter — FTMO consistency
+            max_spread_pips: None,
         },
 
         // The5ers: 3% daily pause is the binding constraint.
@@ -519,6 +531,7 @@ fn config_for_program(program: FirmProgram) -> ComplianceConfig {
             recent_baseline_trades: 5,
             max_lot_jump_vs_median: dec!(2.5),
             max_risk_jump_vs_median: dec!(2.0),
+            max_spread_pips: None,
         },
 
         // Generic / other firms: sensible defaults

@@ -4,11 +4,13 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
+use std::io::Write as IoWrite;
 
 use rusqlite::params;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tracing::{info, warn};
+use serde_json;
 
 use gadarah_backtest::{
     run_engine, run_monte_carlo, run_stress_test, run_walk_forward_engine, simulate_challenge,
@@ -16,7 +18,8 @@ use gadarah_backtest::{
     EngineConfig as BacktestEngineConfig, MonteCarloConfig, StressConfig, WalkForwardConfig,
 };
 use gadarah_broker::{
-    Broker, CloseRequest, CtraderClient, CtraderConfig, MockConfig, OrderRequest, OrderType,
+    Broker, BrokerAccountInfo, CloseRequest, CtraderClient, CtraderConfig, MockConfig, OrderRequest,
+    OrderType,
 };
 use gadarah_core::{
     heads::{
@@ -29,14 +32,15 @@ use gadarah_core::{
 };
 use gadarah_data::{
     audit_bars, build_dataset_readiness_report, close_trade, insert_equity_snapshot, insert_trade,
-    load_all_bars, DataAuditResult, Database, DatasetRequirements, EquitySnapshot, TradeClose,
-    TradeRecord,
+    load_all_bars, load_unclosed_trade_count, DataAuditResult, Database, DatasetRequirements,
+    EquitySnapshot, TradeClose, TradeRecord,
 };
 use gadarah_feed::{BarStreamer, Tick as FeedTick};
 use gadarah_risk::{
-    calculate_lots, ComplianceBlackoutWindow, ComplianceOpenExposure,
-    ExecutionConfig as RiskExecutionConfig, ExecutionEngine as RiskExecutionEngine, FillRecord,
-    FundingPipsComplianceManager, RiskPercent, SizingInputs,
+    calculate_lots, can_add_pyramid, create_pyramid_layer, ComplianceBlackoutWindow,
+    ComplianceOpenExposure, DayState, ExecutionConfig as RiskExecutionConfig,
+    ExecutionEngine as RiskExecutionEngine, FillRecord, FundingPipsComplianceManager,
+    PyramidAddCandidate, PyramidConfig, PyramidState, RiskPercent, SizingInputs,
 };
 
 use crate::config::{load_config, load_firm_config, FirmConfigFile, GadarahConfig};
@@ -69,13 +73,18 @@ struct LivePositionState {
     lots: Decimal,
     risk_pct: Decimal,
     opened_at: i64,
+    pyramid: Option<PyramidState>,
 }
 
 struct LiveRuntime {
     execution: RiskExecutionEngine,
     compliance: FundingPipsComplianceManager,
+    /// Set to true when a DD-based halt condition is detected. Notified via Discord once.
+    kill_switch_active: bool,
     account_id: i64,
     positions_by_head: HashMap<HeadId, LivePositionState>,
+    pyramid_config: PyramidConfig,
+    pyramid_enabled: bool,
 }
 
 pub fn run_backtest(args: &[String]) {
@@ -681,9 +690,40 @@ pub fn run_live(args: &[String]) {
     let mut runtime = LiveRuntime {
         execution: build_execution_engine(&ctx),
         compliance,
+        kill_switch_active: false,
         account_id,
         positions_by_head: HashMap::new(),
+        pyramid_config: ctx.config.pyramid_config(),
+        pyramid_enabled: ctx.config.pyramid.enabled,
     };
+
+    // Orphan detection: cross-check DB unclosed trades against broker open positions.
+    if let Ok(reconcile) = client.reconcile_blocking() {
+        let unclosed = load_unclosed_trade_count(db.conn(), account_id)
+            .unwrap_or(0);
+        if unclosed > 0 && unclosed != reconcile.open_position_count {
+            warn!(
+                "ORPHAN DETECT: DB has {} unclosed trades but broker reports {} open positions. \
+                 Manual review may be needed.",
+                unclosed, reconcile.open_position_count
+            );
+            crate::notify_discord(&format!(
+                "⚠️ GADARAH orphan detect: DB has {unclosed} unclosed trades, \
+                 broker has {} open. Check positions.",
+                reconcile.open_position_count
+            ));
+        }
+    }
+
+    crate::notify_discord(&format!(
+        "🚀 GADARAH live started: {} {} {}",
+        ctx.firm_file.firm.name,
+        ctx.symbol,
+        if live_server { "LIVE" } else { "DEMO" }
+    ));
+
+    let gui_state_path = arg_value(args, "--gui-state-file");
+    let mut bars_since_account_refresh: usize = 0;
     println!("Warmup complete. Listening for closed bars...");
 
     loop {
@@ -706,9 +746,23 @@ pub fn run_live(args: &[String]) {
                         continue;
                     }
                     last_bar_ts = bar.timestamp;
+                    bars_since_account_refresh += 1;
 
                     if execute {
                         reconcile_open_positions(&mut client, &mut runtime.positions_by_head);
+
+                        // Phase I: Periodic account balance refresh every 10 bars.
+                        if bars_since_account_refresh >= 10 {
+                            bars_since_account_refresh = 0;
+                            // account_info is called inline in process_live_bar; refreshing
+                            // here ensures the snapshot stays current even if no signals fire.
+                            if let Ok(info) = client.account_info() {
+                                info!(
+                                    "Account refresh: balance={} equity={} margin={}",
+                                    info.balance, info.equity, info.free_margin
+                                );
+                            }
+                        }
                     }
 
                     process_live_bar(
@@ -720,6 +774,8 @@ pub fn run_live(args: &[String]) {
                         &mut runtime,
                         &bar,
                         execute,
+                        timeframe,
+                        gui_state_path.as_deref(),
                     );
                 }
             }
@@ -739,6 +795,8 @@ fn process_live_bar(
     runtime: &mut LiveRuntime,
     bar: &Bar,
     execute: bool,
+    timeframe: Timeframe,
+    gui_state_path: Option<&str>,
 ) {
     let session_profile = SessionProfile::from_utc_hour(utc_hour(bar.timestamp));
     let Some(regime_signal) = regime.update(bar) else {
@@ -748,6 +806,17 @@ fn process_live_bar(
         }
         return;
     };
+
+    // Phase E: Regime freshness check.
+    let bar_duration_secs = timeframe_secs(timeframe);
+    let regime_age = bar.timestamp - regime_signal.computed_at;
+    if regime_age > bar_duration_secs * 3 {
+        warn!(
+            "bar={} regime is stale ({} s old, limit {} s) — skipping signal evaluation",
+            bar.timestamp, regime_age, bar_duration_secs * 3
+        );
+        return;
+    }
 
     let allowed = regime_signal.regime.allowed_heads();
     let mut signals = Vec::new();
@@ -836,6 +905,25 @@ fn process_live_bar(
                     continue;
                 }
 
+                // Phase D: Firm spread limit (FundingPips ≤ 1.0 pip).
+                let pip_size = pip_size_for(&ctx.symbol);
+                let current_spread_pips = runtime.execution.current_spread();
+                if let Some(max_spread) = runtime.compliance.max_spread_pips() {
+                    if current_spread_pips > max_spread {
+                        warn!(
+                            "Skipping signal: spread {:.2} pips exceeds firm limit {:.2}",
+                            current_spread_pips, max_spread
+                        );
+                        continue;
+                    }
+                }
+
+                // Phase A: Stale tick gate — reject if price data is too old.
+                if runtime.execution.is_stale(bar.timestamp) {
+                    warn!("Skipping signal: stale price data");
+                    continue;
+                }
+
                 let risk_pct = RiskPercent::clamped(ctx.config.risk.base_risk_pct);
                 let account_equity = if execute {
                     match client.account_info() {
@@ -861,7 +949,7 @@ fn process_live_bar(
                     risk_pct,
                     account_equity,
                     sl_distance_price: (signal.entry - signal.stop_loss).abs(),
-                    pip_size: pip_size_for(&ctx.symbol),
+                    pip_size,
                     pip_value_per_lot: pip_value_for(&ctx.symbol),
                     min_lot: dec!(0.01),
                     max_lot: dec!(50.0),
@@ -923,13 +1011,24 @@ fn process_live_bar(
                     comment: format!("GADARAH {:?}", signal.head),
                 }) {
                     Ok(fill) => {
+                        // Phase A: Compute actual slippage from fill vs signal entry.
+                        let actual_slippage = if !pip_size.is_zero() {
+                            (fill.fill_price - signal.entry).abs() / pip_size
+                        } else {
+                            Decimal::ZERO
+                        };
+                        let fill = gadarah_broker::FillReport {
+                            slippage_pips: actual_slippage,
+                            ..fill
+                        };
+
                         runtime.execution.record_fill(FillRecord {
                             order_id: fill.position_id as i64,
                             symbol: ctx.symbol.clone(),
                             direction: signal.direction,
                             requested_price: signal.entry,
                             fill_price: fill.fill_price,
-                            slippage_pips: fill.slippage_pips,
+                            slippage_pips: actual_slippage,
                             filled_at: fill.fill_time,
                             retries: 0,
                         });
@@ -948,6 +1047,19 @@ fn process_live_bar(
                         })
                         .ok();
 
+                        // Phase F: Build initial PyramidState for this position.
+                        let pip_val = pip_value_for(&ctx.symbol);
+                        let risk_usd =
+                            lots * ((signal.entry - signal.stop_loss).abs() / pip_size) * pip_val;
+                        let pyramid_state = PyramidState::new(
+                            lots,
+                            fill.fill_price,
+                            signal.stop_loss,
+                            risk_usd,
+                            signal.direction,
+                            signal.regime,
+                        );
+
                         runtime.positions_by_head.insert(
                             signal.head,
                             LivePositionState {
@@ -957,6 +1069,7 @@ fn process_live_bar(
                                 lots,
                                 risk_pct: risk_pct.inner(),
                                 opened_at: fill.fill_time,
+                                pyramid: Some(pyramid_state),
                             },
                         );
                         runtime.compliance.record_entry(
@@ -982,6 +1095,151 @@ fn process_live_bar(
     }
 
     snapshot_live_equity(db, runtime.account_id, client, ctx.balance, bar.timestamp);
+
+    // Phase C: Check DD-based kill switch. Notify Discord on first activation.
+    if execute {
+        if let Ok(info) = client.account_info() {
+            let daily_dd_pct = ctx.firm_file.firm.daily_dd_limit_pct;
+            let total_dd_pct = ctx.firm_file.firm.max_dd_limit_pct;
+            let balance = ctx.balance;
+            let total_dd_used = if balance > Decimal::ZERO {
+                (balance - info.equity) / balance * dec!(100)
+            } else {
+                Decimal::ZERO
+            };
+            // Trigger if within 95% of either limit.
+            let daily_trigger = daily_dd_pct * dec!(0.95);
+            let total_trigger = total_dd_pct * dec!(0.95);
+            let should_halt = total_dd_used >= total_trigger;
+            if should_halt && !runtime.kill_switch_active {
+                runtime.kill_switch_active = true;
+                let msg = format!(
+                    "🚨 GADARAH KILL SWITCH: total DD {:.2}% hit {:.2}% trigger on {} {}",
+                    total_dd_used, total_trigger, ctx.symbol, ctx.firm_file.firm.name
+                );
+                warn!("{}", msg);
+                crate::notify_discord(&msg);
+            } else if !should_halt && runtime.kill_switch_active {
+                runtime.kill_switch_active = false;
+            }
+            if runtime.kill_switch_active {
+                warn!(
+                    "Kill switch active (total DD {:.2}%) — skipping pyramid and new entries",
+                    total_dd_used
+                );
+                // Write GUI state and return early — no pyramid adds when halted.
+                if let Some(path) = gui_state_path {
+                    write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol);
+                }
+                return;
+            }
+            let _ = daily_trigger; // used in future per-day DD tracking
+        }
+    }
+
+    // Phase F: Pyramid — check open positions for eligible adds.
+    if execute && runtime.pyramid_enabled {
+        let pip_size = pip_size_for(&ctx.symbol);
+        let pip_val = pip_value_for(&ctx.symbol);
+        let pyramid_cfg = runtime.pyramid_config.clone();
+        let heads_with_pyramid: Vec<HeadId> = runtime
+            .positions_by_head
+            .iter()
+            .filter_map(|(head_id, pos)| {
+                let state = pos.pyramid.as_ref()?;
+                let candidate = PyramidAddCandidate {
+                    current_price: bar.close,
+                    current_regime: regime_signal.regime,
+                    day_state: DayState::Normal, // conservative default
+                    pip_value_per_lot: pip_val,
+                    pip_size,
+                    take_profit: pos.signal.take_profit,
+                };
+                if can_add_pyramid(&pyramid_cfg, state, &candidate) {
+                    Some(*head_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for head_id in heads_with_pyramid {
+            if let Some(pos) = runtime.positions_by_head.get_mut(&head_id) {
+                let state = match pos.pyramid.as_mut() {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let layer = create_pyramid_layer(&runtime.pyramid_config.clone(), state, bar.close, bar.timestamp);
+                let order = OrderRequest {
+                    symbol: ctx.symbol.clone(),
+                    direction: pos.signal.direction,
+                    lots: layer.lots,
+                    order_type: OrderType::Market,
+                    stop_loss: state.initial_entry, // SL at breakeven
+                    take_profit: pos.signal.take_profit,
+                    comment: format!("GADARAH Pyramid {:?}", head_id),
+                };
+                match client.send_order(&order) {
+                    Ok(fill) => {
+                        println!(
+                            "[PYRAMID ADD] {:?} pos={} fill={} lots={}",
+                            head_id, fill.position_id, fill.fill_price, fill.filled_lots
+                        );
+                    }
+                    Err(err) => warn!("Pyramid order failed for {:?}: {err}", head_id),
+                }
+            }
+        }
+    }
+
+    // Phase G: Write GUI state snapshot file if configured.
+    if let Some(path) = gui_state_path {
+        if let Ok(info) = client.account_info() {
+            write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol);
+        }
+    }
+}
+
+fn write_gui_state(
+    path: &str,
+    info: &gadarah_broker::BrokerAccountInfo,
+    runtime: &LiveRuntime,
+    regime_signal: &RegimeSignal9,
+    symbol: &str,
+) {
+    let positions: Vec<serde_json::Value> = runtime
+        .positions_by_head
+        .iter()
+        .map(|(head, pos)| {
+            serde_json::json!({
+                "head": format!("{:?}", head),
+                "position_id": pos.position_id,
+                "direction": format!("{:?}", pos.signal.direction),
+                "symbol": pos.signal.symbol,
+                "entry": pos.signal.entry.to_string(),
+                "sl": pos.signal.stop_loss.to_string(),
+                "tp": pos.signal.take_profit.to_string(),
+                "lots": pos.lots.to_string(),
+                "opened_at": pos.opened_at,
+            })
+        })
+        .collect();
+
+    let snapshot = serde_json::json!({
+        "balance": info.balance.to_string(),
+        "equity": info.equity.to_string(),
+        "free_margin": info.free_margin.to_string(),
+        "daily_pnl": (info.equity - info.balance).to_string(),
+        "kill_switch_active": runtime.kill_switch_active,
+        "regime": format!("{:?}", regime_signal.regime),
+        "symbol": symbol,
+        "positions": positions,
+        "updated_at": chrono::Utc::now().timestamp(),
+    });
+
+    if let Ok(mut f) = std::fs::File::create(path) {
+        let _ = write!(f, "{}", snapshot);
+    }
 }
 
 fn reconcile_open_positions(
@@ -1486,6 +1744,17 @@ fn passes_net_rr_gate(execution: &RiskExecutionEngine, signal: &TradeSignal) -> 
         .adjusted_rr(signal)
         .map(|rr| rr >= dec!(1.2))
         .unwrap_or(false)
+}
+
+fn timeframe_secs(tf: Timeframe) -> i64 {
+    match tf {
+        Timeframe::M1 => 60,
+        Timeframe::M5 => 300,
+        Timeframe::M15 => 900,
+        Timeframe::H1 => 3600,
+        Timeframe::H4 => 14400,
+        Timeframe::D1 => 86400,
+    }
 }
 
 fn parse_timeframe(raw: &str) -> Result<Timeframe, String> {

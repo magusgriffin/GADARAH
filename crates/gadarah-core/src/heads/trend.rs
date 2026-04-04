@@ -191,7 +191,7 @@ impl Head for TrendHead {
             symbol: self.config.symbol.clone(),
             direction: dir,
             kind: SignalKind::Open,
-            entry: dec!(0), // market
+            entry: bar.close, // market order; use bar close as effective entry for R:R gating
             stop_loss: sl,
             take_profit: tp,
             take_profit2: None,

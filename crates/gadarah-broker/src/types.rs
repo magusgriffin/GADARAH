@@ -125,6 +125,8 @@ pub struct Tick {
 pub struct ReconcileResult {
     pub open_position_count: usize,
     pub pending_order_count: usize,
+    /// Position IDs reported as open by the broker. Used for orphan detection.
+    pub open_position_ids: Vec<u64>,
 }
 
 impl Tick {
