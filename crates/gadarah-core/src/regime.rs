@@ -122,42 +122,53 @@ impl RegimeClassifier {
             return (Regime9::Choppy, dec!(0.70));
         }
 
-        // 3. StrongTrendUp: ADX > 25, Hurst > 0.55, close > EMA20 > EMA200
+        // 3. StrongTrendUp: ADX > 25, Hurst > 0.60, close > EMA20 > EMA200
         if inputs.adx > dec!(25)
-            && inputs.hurst > dec!(0.55)
+            && inputs.hurst > dec!(0.60)
             && inputs.close > inputs.ema20
             && inputs.ema20 > inputs.ema200
         {
             return (Regime9::StrongTrendUp, dec!(0.80));
         }
 
-        // 4. StrongTrendDown: ADX > 25, Hurst > 0.55, close < EMA20 < EMA200
+        // 4. StrongTrendDown: ADX > 25, Hurst > 0.60, close < EMA20 < EMA200
         if inputs.adx > dec!(25)
-            && inputs.hurst > dec!(0.55)
+            && inputs.hurst > dec!(0.60)
             && inputs.close < inputs.ema20
             && inputs.ema20 < inputs.ema200
         {
             return (Regime9::StrongTrendDown, dec!(0.80));
         }
 
-        // 5. WeakTrendUp: ADX >= 15, Hurst >= 0.45, close > EMA200
-        //    (but not already classified as StrongTrend above)
-        if inputs.adx >= dec!(15) && inputs.hurst >= dec!(0.45) && inputs.close > inputs.ema200 {
+        // 5. WeakTrendUp: ADX 18-27, Hurst 0.50-0.60, close > EMA200
+        //    Widened from ADX 20-25 / Hurst 0.52-0.60 to capture borderline
+        //    trending conditions that would otherwise fall to Transitioning.
+        if inputs.adx >= dec!(18)
+            && inputs.adx <= dec!(27)
+            && inputs.hurst >= dec!(0.50)
+            && inputs.hurst <= dec!(0.60)
+            && inputs.close > inputs.ema200
+        {
             return (Regime9::WeakTrendUp, dec!(0.55));
         }
 
-        // 6. WeakTrendDown: ADX >= 15, Hurst >= 0.45, close < EMA200
-        if inputs.adx >= dec!(15) && inputs.hurst >= dec!(0.45) && inputs.close < inputs.ema200 {
+        // 6. WeakTrendDown: ADX 18-27, Hurst 0.50-0.60, close < EMA200
+        if inputs.adx >= dec!(18)
+            && inputs.adx <= dec!(27)
+            && inputs.hurst >= dec!(0.50)
+            && inputs.hurst <= dec!(0.60)
+            && inputs.close < inputs.ema200
+        {
             return (Regime9::WeakTrendDown, dec!(0.55));
         }
 
-        // 7. RangingTight: Hurst < 0.48, BB width pctile < 0.35, CI > 50
-        if inputs.hurst < dec!(0.48) && inputs.bb_pctile < dec!(0.35) && inputs.ci > dec!(50) {
+        // 7. RangingTight: Hurst < 0.45, BB width pctile < 0.30, CI > 55
+        if inputs.hurst < dec!(0.45) && inputs.bb_pctile < dec!(0.30) && inputs.ci > dec!(55) {
             return (Regime9::RangingTight, dec!(0.65));
         }
 
-        // 8. RangingWide: Hurst < 0.50, BB width pctile < 0.70
-        if inputs.hurst < dec!(0.50) && inputs.bb_pctile < dec!(0.70) {
+        // 8. RangingWide: Hurst < 0.45, BB width pctile < 0.60
+        if inputs.hurst < dec!(0.45) && inputs.bb_pctile < dec!(0.60) {
             return (Regime9::RangingWide, dec!(0.60));
         }
 

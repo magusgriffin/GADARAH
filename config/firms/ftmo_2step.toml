@@ -1,0 +1,17 @@
+[firm]
+name = "FTMO 2-Step"
+challenge_type = "ftmo_2step"
+profit_target_pct = 10.0
+daily_dd_limit_pct = 5.0
+max_dd_limit_pct = 10.0
+dd_mode = "static"
+min_trading_days = 4
+news_trading_allowed = true
+max_positions = 5
+profit_split_pct = 80.0
+
+[broker]
+host = "live.ctraderapi.com"
+port = 5035
+client_id_env = "GADARAH_FTMO_CLIENT_ID"
+client_secret_env = "GADARAH_FTMO_CLIENT_SECRET"

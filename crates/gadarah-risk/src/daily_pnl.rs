@@ -119,7 +119,12 @@ impl DailyPnlEngine {
         // Daily reset: check if we moved to a new day
         let day = timestamp.div_euclid(86400);
         if day != self.last_day {
-            self.day_open_equity = current_equity;
+            // On genuine day rollovers reset to current equity.
+            // On the very first call (last_day == -1 sentinel) preserve the initial
+            // equity supplied to new(), which is already set in day_open_equity.
+            if self.last_day >= 0 {
+                self.day_open_equity = current_equity;
+            }
             self.intraday_peak = current_equity;
             self.day_pnl_usd = Decimal::ZERO;
             self.state = DayState::Normal;
@@ -182,5 +187,69 @@ impl DailyPnlEngine {
     /// Day-open equity for reference.
     pub fn day_open_equity(&self) -> Decimal {
         self.day_open_equity
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    fn engine() -> DailyPnlEngine {
+        DailyPnlEngine::new(DailyPnlConfig::default(), dec!(10000))
+    }
+
+    #[test]
+    fn day_state_never_regresses_within_same_day() {
+        let mut e = engine();
+        let t = 86400; // Day 1
+                       // Push into Cruising (60% of 2% = 1.2% gain)
+        e.update(dec!(10120), t);
+        assert_eq!(e.state(), DayState::Cruising);
+        // Drop back below Cruising threshold — state must NOT revert
+        e.update(dec!(10050), t);
+        assert_eq!(
+            e.state(),
+            DayState::Cruising,
+            "state must not regress to Normal"
+        );
+    }
+
+    #[test]
+    fn protecting_never_reverts_to_cruising() {
+        let mut e = engine();
+        let t = 86400;
+        // Push to Protecting (100% of 2% = 2.0% gain)
+        e.update(dec!(10200), t);
+        assert_eq!(e.state(), DayState::Protecting);
+        // Equity drops but still positive — still Protecting
+        e.update(dec!(10100), t);
+        assert_eq!(
+            e.state(),
+            DayState::Protecting,
+            "must not regress from Protecting to Cruising"
+        );
+    }
+
+    #[test]
+    fn daily_stop_halts_trading() {
+        let mut e = engine();
+        let t = 86400;
+        // 1.5% loss triggers DailyStopped
+        e.update(dec!(9850), t);
+        assert_eq!(e.state(), DayState::DailyStopped);
+        assert!(!e.can_trade());
+    }
+
+    #[test]
+    fn daily_reset_clears_state() {
+        let mut e = engine();
+        // Day 1 hits DailyStopped
+        e.update(dec!(9850), 86400);
+        assert_eq!(e.state(), DayState::DailyStopped);
+        // Day 2 — new day resets to Normal
+        e.update(dec!(9850), 86400 * 2);
+        assert_eq!(e.state(), DayState::Normal, "new day should reset state");
+        assert!(e.can_trade());
     }
 }

@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
+use rand::Rng;
 use rand::SeedableRng;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -38,13 +38,14 @@ pub struct MonteCarloResult {
     pub p95_final_balance: Decimal,
     pub worst_drawdown_pct: Decimal,
     pub median_drawdown_pct: Decimal,
+    pub p95_drawdown_pct: Decimal,
 }
 
-/// Run Monte Carlo simulation by shuffling trade order.
+/// Run Monte Carlo simulation by bootstrapping the observed trade distribution.
 ///
-/// Each path takes the same set of trade results, shuffles the order,
-/// and replays the equity curve. This tests whether the strategy survives
-/// different orderings of wins/losses (i.e., worst-case clustering).
+/// Each path samples `trades.len()` trades with replacement from the observed
+/// set and replays the resulting equity curve. This gives meaningful return and
+/// drawdown distributions while still stressing win/loss clustering.
 pub fn run_monte_carlo(
     trades: &[TradeResult],
     starting_balance: Decimal,
@@ -63,6 +64,7 @@ pub fn run_monte_carlo(
             p95_final_balance: starting_balance,
             worst_drawdown_pct: Decimal::ZERO,
             median_drawdown_pct: Decimal::ZERO,
+            p95_drawdown_pct: Decimal::ZERO,
         };
     }
 
@@ -73,17 +75,15 @@ pub fn run_monte_carlo(
 
     let ruin_threshold = starting_balance * (dec!(1) - config.ruin_dd_pct / dec!(100));
 
-    let mut shuffled: Vec<&TradeResult> = trades.iter().collect();
-
     for _ in 0..config.num_paths {
-        shuffled.shuffle(&mut rng);
-
         let mut equity = starting_balance;
         let mut peak = starting_balance;
         let mut max_dd_pct = Decimal::ZERO;
         let mut ruined = false;
 
-        for t in &shuffled {
+        for _ in 0..trades.len() {
+            let idx = rng.gen_range(0..trades.len());
+            let t = &trades[idx];
             equity += t.pnl;
 
             if equity > peak {
@@ -130,6 +130,7 @@ pub fn run_monte_carlo(
         p95_final_balance: percentile(&final_balances, 0.95),
         worst_drawdown_pct: max_drawdowns.last().copied().unwrap_or(Decimal::ZERO),
         median_drawdown_pct: percentile(&max_drawdowns, 0.50),
+        p95_drawdown_pct: percentile(&max_drawdowns, 0.95),
     }
 }
 

@@ -1,6 +1,6 @@
 [engine]
 mode = "challenge"
-symbols = ["EURUSD"]
+symbols = ["EURUSD", "GBPUSD"]
 log_level = "info"
 db_path = "data/gadarah.db"
 
@@ -39,3 +39,8 @@ slippage_alert_mult = 2.0
 max_spread_atr_ratio = 0.30
 stale_price_seconds = 2
 min_net_rr = 1.2
+
+[compliance.fundingpips]
+# Ignored for non-FundingPips firm profiles.
+# Resolved relative to this config file.
+blackout_file = "compliance/fundingpips_blackouts.toml"

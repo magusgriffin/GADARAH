@@ -105,3 +105,56 @@ impl EquityCurveFilter {
         self.equity_history.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn cold_start_returns_full_size() {
+        let mut f = EquityCurveFilter::new(EquityCurveFilterConfig::default());
+        // Only 5 trades — below ma_period of 20
+        for _ in 0..5 {
+            f.record_trade_close(dec!(10000));
+        }
+        assert_eq!(f.multiplier(), dec!(1.0), "cold start must return 1.0");
+    }
+
+    #[test]
+    fn above_ma_returns_full_size() {
+        let mut f = EquityCurveFilter::new(EquityCurveFilterConfig::default());
+        for i in 0..20 {
+            f.record_trade_close(Decimal::from(10000 + i * 10));
+        }
+        // Latest equity is highest — above MA
+        assert_eq!(f.multiplier(), dec!(1.0));
+    }
+
+    #[test]
+    fn below_ma_halves_size() {
+        let mut f = EquityCurveFilter::new(EquityCurveFilterConfig::default());
+        // Fill with 20 records at 10000
+        for _ in 0..20 {
+            f.record_trade_close(dec!(10000));
+        }
+        // MA = 10000; add one record below MA
+        f.record_trade_close(dec!(9950)); // 0.5% below — within shallow band
+        assert_eq!(f.multiplier(), dec!(0.50), "below MA must halve size");
+    }
+
+    #[test]
+    fn deeply_below_ma_reduces_to_quarter() {
+        let mut f = EquityCurveFilter::new(EquityCurveFilterConfig::default());
+        for _ in 0..20 {
+            f.record_trade_close(dec!(10000));
+        }
+        // MA = 10000; 3% below triggers deep reduction (deep_threshold = 2%)
+        f.record_trade_close(dec!(9700));
+        assert_eq!(
+            f.multiplier(),
+            dec!(0.25),
+            "deeply below MA must reduce to 0.25"
+        );
+    }
+}

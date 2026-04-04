@@ -55,12 +55,12 @@ Stage 0: FREE VALIDATION ($0 spent)
 ├── Historical replay on 2+ years of data
 ├── Walk-forward (5-fold cross-validation)
 ├── Monte Carlo (10,000 paths)
-├── Challenge simulation (100 runs per firm)
+├── Challenge simulation (100 runs on The5ers Hyper Growth rules)
 ├── Demo-forward on cTrader demo account (1-2 weeks)
 └── GATE: All 5 validation stages pass before ANY money is spent
 
-Stage 1: SINGLE PAID ATTEMPT ($10-$39 spent)
-├── One micro-challenge (Blue Guardian $10 OR FundingPips $29)
+Stage 1: SINGLE PAID ATTEMPT ($260+ spent)
+├── One The5ers Hyper Growth $5k challenge
 ├── Challenge-mode risk only
 ├── No feature changes during the attempt
 ├── No new heads, no parameter tweaks, no "quick fixes"
@@ -85,28 +85,39 @@ Stage 4: SCALING (3-5 accounts)
 └── Consider SmcHead, TrendHead, Volume Profile, ML scorer
 ```
 
-### Prop Firm Selection (Verified March 2026: cTrader + Bots Allowed)
+### Challenge Target (Verified April 2026: The5ers Hyper Growth Rules)
 
-| Firm | Account Size | Cost | Challenge Type | Target | Daily DD | Max DD | Min Days | cTrader | Bots |
-|------|-------------|------|---------------|--------|----------|--------|----------|--------|------|
-| **Blue Guardian** | $5,000 | $10 | Instant funding | N/A | 4% | 6% trailing | 0 | Y | Y |
-| **FundingPips** | $5,000 | $29 | 2-Step Pro | 6% / 6% | 4% | 6% trailing | 3 | Y | Y |
-| **FundingPips** | $5,000 | $36 | 2-Step Standard | 8% / 5% | 5% | 10% static | 3 | Y | Y |
-| **PipFarm** | $5,000 | $60 | Evaluation | 8% | 3% | 6% trailing | 3 | Y | Y |
+| Firm | Account Size | Cost | Challenge Type | Target | Daily Guardrail | Max DD | Min Days | cTrader | EAs on cTrader |
+|------|-------------|------|---------------|--------|----------|--------|----------|--------|----------------|
+| **The5ers** | $5,000 | $260 | Hyper Growth | 10% | 3% daily pause | 6% static stopout | 0 | Y | Y |
 
-> **Firms REMOVED after automation audit:**
-> - **Maven Trading** ($22) — Bans ALL EAs/bots
-> - **FundedNext** ($32) — Bans EAs on cTrader specifically
-> - **BrightFunded** ($95) — Exceeds budget; bans HFT and grid trading on funded
-> - **MyFundedFX** ($50) — Over budget at micro-tier
+> **The5ers Hyper Growth is now the primary optimization target for this repo.**
+> - Strategy validation, challenge simulation, drawdown handling, and defaults are aligned to Hyper Growth.
+> - It is cTrader-accessible and The5ers explicitly allows EAs, subject to the normal bans on HFT, arbitrage, emulators, and copy-trading of other people’s signals.
 
-> **Automation rules (all viable firms):**
-> - Allowed: Custom strategy EAs, trade management bots, risk management automation
-> - Banned everywhere: HFT, latency arbitrage, tick scalping, toxic flow, server spamming
-> - Our strategy trades 1-4 times/day on M15/H1 timeframes = standard algo trading, NOT HFT. Fully compliant.
-> - FundingPips bans "third-party off-the-shelf EAs" — our custom Rust bot is fine.
+> **Hyper Growth constraints carried into the codebase:**
+> - One-step / instant-style challenge with 10% target
+> - 3% daily pause anchored to the higher of start-of-day balance or equity
+> - 6% stopout below the initial account size
+> - No minimum trading days
+> - First payout 14 days after funded, then every 2 weeks
 
-**Recommendation:** Start with **Blue Guardian $5k instant ($10)** for immediate execution validation. Then **FundingPips 2-Step Pro ($29)** for the real challenge. Total: $39 spent, $14-$41 reserve.
+> **Selectable instant-style profiles in the repo:**
+> - `config/firms/the5ers_hypergrowth.toml` — default, policy-clean target
+> - `config/firms/fundingpips_1step.toml` — faster-payout candidate, now guarded by a FundingPips compliance manager
+> - `config/firms/fundingpips_zero.toml` — funded-style trailing profile, now guarded by a FundingPips compliance manager
+> - `config/firms/blueguardian.toml` — legacy instant profile already retained for comparison
+> - `config/firms/alphaone.toml` — rules-only profile, not cTrader-EA compatible
+
+> **FundingPips-specific compliance layer now expected in code:**
+> - Reject scalping/news-style heads on FundingPips profiles
+> - Block opposite-direction exposure on the same symbol
+> - Enforce entry pacing / anti-HFT guardrails
+> - Detect abnormal lot/risk jumps vs recent baseline behavior
+> - Enforce FundingPips Zero same-trade-idea risk cap
+> - Load blackout windows from local config so scheduled news windows are enforced in replay and live mode
+
+**Recommendation:** Use **The5ers Hyper Growth $5k ($260)** as the default proving tier. Treat the other instant profiles as optional comparison modes, not the primary deployment target.
 
 ---
 
@@ -1846,14 +1857,14 @@ pub fn process_bar(&mut self, bar: &Bar) -> Vec<ExecutionResult> {
 
 | Metric | Minimum | Target |
 |--------|---------|--------|
-| Total return | >= 8.0% | >= 12% |
-| Max drawdown | < 5.0% | < 3.5% |
+| Total return | >= 10.0% | >= 14% |
+| Max drawdown | < 2.5% | < 2.0% |
 | Win rate | >= 45% | >= 52% |
 | Profit factor | >= 1.30 | >= 1.60 |
 | Total trades | >= 150 | >= 300 |
 | % profitable days | >= 55% | >= 62% |
 
-> DD gates are set to < 5.0% because the cheapest cTrader firms (Blue Guardian, FundingPips Pro) have 6% trailing DD limits. We need a 1% buffer minimum.
+> DD gates are set below Hyper Growth's 3% daily pause and 6% static stopout. We keep replay drawdown under 2.5% so daily pause noise, spread spikes, and open-equity carry do not invalidate the account.
 
 ### Gate 2: Walk-Forward (5-Fold)
 
@@ -1912,7 +1923,7 @@ pub fn process_bar(&mut self, bar: &Bar) -> Vec<ExecutionResult> {
 14. Kill switch + DD tracking
 15. Trade manager (trailing stops, partials, time exits)
 16. Equity curve filter
-17. Challenge compliance (coasting logic)
+17. Challenge compliance (coasting logic + firm-specific enforcement for FundingPips profiles)
 18. AccountState + AccountPhase state machine
 19. DD distance multiplier + phase risk multiplier
 20. TemporalIntelligence + UrgencyProfile
@@ -1942,7 +1953,7 @@ pub fn process_bar(&mut self, bar: &Bar) -> Vec<ExecutionResult> {
 40. **GATE: Demo results must not invalidate backtest thesis**
 
 ### Week 5-6 — First Paid Attempt
-41. If all gates pass: buy one micro-challenge ($10-$39)
+41. If all gates pass: buy one The5ers Hyper Growth challenge ($260 for 5k)
 42. Deploy in challenge mode
 43. **No feature changes during the attempt**
 44. Monitor daily via SQLite queries or simple CLI dashboard
@@ -2077,17 +2088,32 @@ slippage_alert_mult = 2.0
 max_spread_atr_ratio = 0.30
 stale_price_seconds = 2
 min_net_rr = 1.2
+
+[compliance.fundingpips]
+# Ignored for non-FundingPips firm profiles.
+blackout_file = "compliance/fundingpips_blackouts.toml"
 ```
 
-**`config/firms/blueguardian.toml`:**
+**`config/compliance/fundingpips_blackouts.toml`:**
+```toml
+# Unix timestamps in UTC seconds.
+# [[blackout_windows]]
+# starts_at = 1775146200
+# ends_at = 1775148000
+# label = "USD NFP"
+
+blackout_windows = []
+```
+
+**`config/firms/the5ers_hypergrowth.toml`:**
 ```toml
 [firm]
-name = "Blue Guardian"
-challenge_type = "instant"
-profit_target_pct = 0.0     # Instant funding, no target
-daily_dd_limit_pct = 4.0
+name = "The5ers - Hyper Growth"
+challenge_type = "hyper_growth"
+profit_target_pct = 10.0
+daily_dd_limit_pct = 3.0
 max_dd_limit_pct = 6.0
-dd_mode = "trailing"
+dd_mode = "static"
 min_trading_days = 0
 news_trading_allowed = true
 max_positions = 5
@@ -2096,8 +2122,8 @@ profit_split_pct = 80.0
 [broker]
 host = "live.ctraderapi.com"
 port = 5035
-client_id_env = "GADARAH_BG_CLIENT_ID"
-client_secret_env = "GADARAH_BG_CLIENT_SECRET"
+client_id_env = "GADARAH_THE5ERS_CLIENT_ID"
+client_secret_env = "GADARAH_THE5ERS_CLIENT_SECRET"
 ```
 
 ---

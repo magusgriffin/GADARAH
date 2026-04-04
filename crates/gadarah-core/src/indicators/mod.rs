@@ -5,6 +5,7 @@ pub mod bollinger;
 pub mod choppiness;
 pub mod ema;
 pub mod hurst;
+pub mod rsi;
 pub mod vwap;
 
 pub use adx::{WilderSmooth, ADX};
@@ -14,4 +15,5 @@ pub use bollinger::{BBValues, BollingerBands};
 pub use choppiness::ChoppinessIndex;
 pub use ema::EMA;
 pub use hurst::HurstExponent;
+pub use rsi::RSI;
 pub use vwap::VWAP;

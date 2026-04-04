@@ -1,16 +1,31 @@
 pub mod aggregator;
+pub mod audit;
 pub mod csv_import;
+pub mod dataset;
+pub mod dataset_pipeline;
 pub mod db;
 pub mod downloader;
 pub mod error;
+pub mod gap_filler;
 pub mod schema;
 pub mod store;
 pub mod trades;
+pub mod volume_processor;
 
 pub use aggregator::{aggregate_bars, MultiTfAggregator, MultiTfOutput, StreamAggregator};
+pub use audit::{audit_bars, DataAuditResult};
 pub use csv_import::{import_csv, CsvFormat};
+pub use dataset::{
+    build_dataset_readiness_report, derive_timeframes_for_symbol, detect_csv_format,
+    discover_dataset_files, import_dataset_dir, DatasetFileSpec, DatasetImportOptions,
+    DatasetImportResult, DatasetReadinessReport, DatasetRequirements, DatasetSeriesReport,
+    DerivedSeriesResult, FileImportResult,
+};
+pub use dataset_pipeline::{run_pipeline, PipelineConfig, PipelineReport, SeriesPipelineResult};
 pub use db::Database;
-pub use downloader::{DataDownloader, DataSource, DownloadConfig, quick_download};
+pub use gap_filler::{detect_gaps, fill_gaps, GapFillReport, GapRange};
+pub use volume_processor::{process_volumes, VolumeProcessStats};
+pub use downloader::{quick_download, DataDownloader, DataSource, DownloadConfig};
 pub use error::DataError;
 pub use store::{
     bar_time_range, count_bars, delete_bars, insert_bar, insert_bars, list_symbols,

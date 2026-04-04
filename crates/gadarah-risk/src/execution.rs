@@ -3,14 +3,13 @@
 //! Handles spread-adjusted R:R gating, spread spikes, stale price detection,
 //! and retry logic for order execution.
 
-use crate::sizing::calculate_lots;
-use crate::types::{RiskDecision, RiskError, RiskPercent};
+use crate::types::RiskDecision;
 use gadarah_core::{Direction, TradeSignal};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 /// Configuration for the execution engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +67,10 @@ impl SpreadTracker {
 
     /// Record a new spread observation
     pub fn record(&mut self, spread_pips: Decimal, timestamp: i64) {
-        self.history.push_back(SpreadSample { spread_pips, timestamp });
+        self.history.push_back(SpreadSample {
+            spread_pips,
+            timestamp,
+        });
         if self.history.len() > 50 {
             self.history.pop_front();
         }
@@ -76,7 +78,10 @@ impl SpreadTracker {
 
     /// Get current spread
     pub fn current(&self) -> Decimal {
-        self.history.back().map(|s| s.spread_pips).unwrap_or(self.session_typical)
+        self.history
+            .back()
+            .map(|s| s.spread_pips)
+            .unwrap_or(self.session_typical)
     }
 
     /// Get typical spread for the session
@@ -168,34 +173,31 @@ impl ExecutionEngine {
     /// Calculate spread-adjusted R:R for a signal
     pub fn adjusted_rr(&self, signal: &TradeSignal) -> Option<Decimal> {
         let spread = self.spread_tracker.current();
-        
+
         let entry = signal.entry;
         let tp = signal.take_profit;
         let sl = signal.stop_loss;
-        
-        let direction_mult = match signal.direction {
-            Direction::Buy => dec!(1),
-            Direction::Sell => dec!(-1),
-        };
-        
+
         // Net distances after spread cost
         let tp_distance = (tp - entry).abs() - spread;
         let sl_distance = (sl - entry).abs() + spread;
-        
+
         if sl_distance.is_zero() {
             return None;
         }
-        
+
         Some(tp_distance / sl_distance)
     }
 
     /// Execute a risk decision with spread-adjusted gating
-    pub fn execute(
-        &mut self,
-        decision: RiskDecision,
-        current_time: i64,
-    ) -> ExecutionResult {
-        let RiskDecision::Execute { signal, risk_pct, lots, is_pyramid: _ } = decision else {
+    pub fn execute(&mut self, decision: RiskDecision, current_time: i64) -> ExecutionResult {
+        let RiskDecision::Execute {
+            signal,
+            risk_pct: _,
+            lots,
+            is_pyramid: _,
+        } = decision
+        else {
             return ExecutionResult::Rejected {
                 reason: "Risk decision was rejected".into(),
             };
@@ -273,13 +275,25 @@ impl ExecutionEngine {
         }
 
         let total = self.fill_log.len();
-        let avg_slippage: Decimal = self.fill_log.iter()
+        let avg_slippage: Decimal = self
+            .fill_log
+            .iter()
             .map(|f| f.slippage_pips)
-            .sum::<Decimal>() / Decimal::from(total);
+            .sum::<Decimal>()
+            / Decimal::from(total);
 
         FillStats {
             total_fills: total,
             avg_slippage_pips: avg_slippage,
+        }
+    }
+
+    /// Record an externally-executed fill so live and backtest paths can share
+    /// the same slippage/fill telemetry.
+    pub fn record_fill(&mut self, fill: FillRecord) {
+        self.fill_log.push_back(fill);
+        if self.fill_log.len() > 1000 {
+            self.fill_log.pop_front();
         }
     }
 }
@@ -298,14 +312,14 @@ mod tests {
     #[test]
     fn test_spread_tracker() {
         let mut tracker = SpreadTracker::new(dec!(1.0));
-        
+
         tracker.record(dec!(0.8), 1000);
         tracker.record(dec!(1.0), 1001);
         tracker.record(dec!(1.2), 1002);
-        
+
         assert_eq!(tracker.current(), dec!(1.2));
         assert!(!tracker.is_spike());
-        
+
         tracker.record(dec!(5.0), 1003); // Spike
         assert!(tracker.is_spike());
     }
@@ -314,17 +328,17 @@ mod tests {
     fn test_adjusted_rr() {
         let config = ExecutionConfig::default();
         let mut engine = ExecutionEngine::new(config, dec!(0.0001));
-        
+
         // Record some spreads
         engine.update_spread(dec!(0.0001), 1000);
-        
+
         // Create a signal with 2:1 R:R
         let signal = TradeSignal {
             symbol: "EURUSD".to_string(),
             direction: Direction::Buy,
             kind: gadarah_core::SignalKind::Open,
             entry: dec!(1.1000),
-            stop_loss: dec!(1.0950), // 50 pips risk
+            stop_loss: dec!(1.0950),   // 50 pips risk
             take_profit: dec!(1.1100), // 100 pips reward = 2:1
             take_profit2: None,
             head: gadarah_core::HeadId::Momentum,
@@ -335,10 +349,10 @@ mod tests {
             comment: "test".to_string(),
             generated_at: 1000,
         };
-        
+
         let rr = engine.adjusted_rr(&signal);
         assert!(rr.is_some());
-        
+
         // With 1 pip spread: reward = 100-1=99, risk = 50+1=51, rr = 99/51 = 1.94
         let rr = rr.unwrap();
         assert!(rr > dec!(1.5));

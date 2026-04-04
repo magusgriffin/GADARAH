@@ -148,3 +148,42 @@ pub enum SizingError {
     #[error("Zero pip value per lot")]
     ZeroPipValue,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn risk_percent_rejects_below_min() {
+        assert!(RiskPercent::new(dec!(0.0)).is_err());
+        assert!(RiskPercent::new(dec!(0.005)).is_err());
+    }
+
+    #[test]
+    fn risk_percent_rejects_above_max() {
+        assert!(RiskPercent::new(dec!(5.01)).is_err());
+        assert!(RiskPercent::new(dec!(100.0)).is_err());
+    }
+
+    #[test]
+    fn risk_percent_accepts_valid_bounds() {
+        assert!(RiskPercent::new(dec!(0.01)).is_ok());
+        assert!(RiskPercent::new(dec!(5.0)).is_ok());
+        assert!(RiskPercent::new(dec!(1.0)).is_ok());
+    }
+
+    #[test]
+    fn risk_percent_clamped_never_out_of_bounds() {
+        let r = RiskPercent::clamped(dec!(999));
+        assert_eq!(r.inner(), RiskPercent::MAX);
+        let r = RiskPercent::clamped(dec!(-5));
+        assert_eq!(r.inner(), RiskPercent::MIN);
+    }
+
+    #[test]
+    fn risk_percent_as_fraction() {
+        let r = RiskPercent::new(dec!(1.0)).unwrap();
+        assert_eq!(r.as_fraction(), dec!(0.01));
+    }
+}

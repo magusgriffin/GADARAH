@@ -4,7 +4,7 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::types::{
     utc_day, utc_hour, Bar, Direction, HeadId, RegimeSignal9, SessionProfile, SignalKind,
-    TradeSignal,
+    Timeframe, TradeSignal,
 };
 
 /// Configuration for the AsianRangeHead.
@@ -41,8 +41,8 @@ impl Default for AsianRangeConfig {
         Self {
             asian_start_utc: 0,
             asian_end_utc: 7,
-            entry_window_end: 12,
-            min_range_pips: dec!(10.0),
+            entry_window_end: 9,
+            min_range_pips: dec!(15.0),
             max_range_pips: dec!(80.0),
             sl_buffer_pips: dec!(5.0),
             tp1_multiplier: dec!(1.0),
@@ -127,6 +127,16 @@ impl AsianRangeHead {
         h >= self.config.asian_end_utc && h < self.config.entry_window_end
     }
 
+    /// Phase 1 spec requires an H1 close above/below the Asian range.
+    /// When replaying M15 data, only the :45 bar represents the H1 close.
+    fn is_entry_bar(&self, bar: &Bar) -> bool {
+        match bar.timeframe {
+            Timeframe::H1 => true,
+            Timeframe::M15 => bar.timestamp.rem_euclid(3600) == 2700,
+            _ => false,
+        }
+    }
+
     /// Compute the range in pips.
     fn range_pips(&self) -> Option<Decimal> {
         match (self.state.asian_high, self.state.asian_low) {
@@ -177,6 +187,9 @@ impl Head for AsianRangeHead {
 
         // Must be in the entry window
         if !self.in_entry_window(bar) {
+            return Vec::new();
+        }
+        if !self.is_entry_bar(bar) {
             return Vec::new();
         }
 
@@ -291,5 +304,39 @@ impl Head for AsianRangeHead {
 
     fn regime_allowed(&self, regime: &RegimeSignal9) -> bool {
         regime.regime.allowed_heads().contains(&HeadId::AsianRange)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(timestamp: i64, timeframe: Timeframe) -> Bar {
+        Bar {
+            open: dec!(1.1000),
+            high: dec!(1.1010),
+            low: dec!(1.0990),
+            close: dec!(1.1005),
+            volume: 0,
+            timestamp,
+            timeframe,
+        }
+    }
+
+    #[test]
+    fn default_config_matches_phase_one_spec() {
+        let cfg = AsianRangeConfig::default();
+        assert_eq!(cfg.entry_window_end, 9);
+        assert_eq!(cfg.min_range_pips, dec!(15.0));
+        assert_eq!(cfg.max_range_pips, dec!(80.0));
+        assert_eq!(cfg.min_rr, dec!(1.2));
+    }
+
+    #[test]
+    fn m15_entry_requires_hourly_close_bar() {
+        let head = AsianRangeHead::new(AsianRangeConfig::default(), dec!(0.0001));
+        assert!(head.is_entry_bar(&bar(7 * 3600 + 45 * 60, Timeframe::M15)));
+        assert!(!head.is_entry_bar(&bar(8 * 3600, Timeframe::M15)));
+        assert!(head.is_entry_bar(&bar(8 * 3600, Timeframe::H1)));
     }
 }

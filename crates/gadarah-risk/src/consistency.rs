@@ -36,6 +36,9 @@ impl ConsistencyTracker {
         if self.daily_pnl_history.len() > MAX_DAILY_HISTORY {
             self.daily_pnl_history.pop_front();
         }
+        if pnl.is_zero() {
+            return;
+        }
         self.total_trading_days += 1;
         if pnl > Decimal::ZERO {
             self.total_profitable_days += 1;
@@ -70,5 +73,57 @@ impl ConsistencyTracker {
 impl Default for ConsistencyTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn pauses_after_three_consecutive_losing_days() {
+        let mut t = ConsistencyTracker::new();
+        t.record_day(1, dec!(-50));
+        assert!(!t.is_paused_for_consistency());
+        t.record_day(2, dec!(-30));
+        assert!(!t.is_paused_for_consistency());
+        t.record_day(3, dec!(-10));
+        assert!(
+            t.is_paused_for_consistency(),
+            "must pause after 3 consecutive losing days"
+        );
+    }
+
+    #[test]
+    fn winning_day_resets_losing_streak() {
+        let mut t = ConsistencyTracker::new();
+        t.record_day(1, dec!(-50));
+        t.record_day(2, dec!(-30));
+        t.record_day(3, dec!(100)); // winning day resets streak
+        assert!(!t.is_paused_for_consistency());
+        assert_eq!(t.streak_losing_days, 0);
+    }
+
+    #[test]
+    fn profitable_day_rate_calculation() {
+        let mut t = ConsistencyTracker::new();
+        t.record_day(1, dec!(100));
+        t.record_day(2, dec!(-50));
+        t.record_day(3, dec!(200));
+        t.record_day(4, dec!(-10));
+        // 2 profitable / 4 total = 0.5
+        assert_eq!(t.profitable_day_rate(), dec!(0.5));
+    }
+
+    #[test]
+    fn flat_days_do_not_count_as_losing_streak() {
+        let mut t = ConsistencyTracker::new();
+        t.record_day(1, dec!(0));
+        t.record_day(2, dec!(0));
+        t.record_day(3, dec!(-25));
+        assert!(!t.is_paused_for_consistency());
+        assert_eq!(t.total_trading_days, 1);
+        assert_eq!(t.streak_losing_days, 1);
     }
 }

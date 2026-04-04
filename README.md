@@ -34,7 +34,8 @@ These paths are ignored so local runs do not pollute the worktree.
 
 ## Current Local Baseline
 
-On the bundled local data as of 2026-03-30, the default CLI/profile is tuned to
-`EURUSD` at `0.74%` base risk because that is the lowest tested default that
-passes the repo's updated BrightFunded evaluation simulation while keeping the
-Monte Carlo ruin rate under `5%`.
+As of 2026-04-02, the default CLI/profile is aligned to **The5ers Hyper Growth**
+`$5k` ruleset: `10%` target, `3%` daily pause from the higher of start-of-day
+balance/equity, and a `6%` stopout below initial balance. Optional non-default
+firm profiles remain under `config/firms/`. FundingPips profiles can now load
+blackout windows from [fundingpips_blackouts.toml](/home/ilovehvn/GADARAH/config/compliance/fundingpips_blackouts.toml).

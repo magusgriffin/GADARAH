@@ -317,12 +317,29 @@ impl Broker for MockBroker {
     }
 
     fn account_info(&self) -> Result<BrokerAccountInfo, BrokerError> {
+        // Margin = sum of (lots × lot_size × 0.01) across all open positions.
+        // This models 1:100 FX leverage (1% margin requirement), which is the
+        // standard retail prop-firm account tier. The 0.01 factor applies
+        // regardless of quote currency since the mock always denominates in USD.
+        let margin_used: Decimal = self
+            .positions
+            .values()
+            .map(|pos| {
+                let lot_size = self
+                    .symbols
+                    .get(&pos.symbol)
+                    .map(|s| s.lot_size)
+                    .unwrap_or(dec!(100_000));
+                pos.lots * lot_size * dec!(0.01)
+            })
+            .sum();
+        let free_margin = self.equity - margin_used;
         Ok(BrokerAccountInfo {
             account_id: 0,
             balance: self.balance,
             equity: self.equity,
-            margin_used: Decimal::ZERO, // simplified for mock
-            free_margin: self.equity,
+            margin_used,
+            free_margin,
             currency: "USD".to_string(),
         })
     }

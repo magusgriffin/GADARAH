@@ -1,0 +1,75 @@
+# FundingPips blackout schedule — April 2026 + first week of May 2026.
+# High-impact USD/EUR economic releases.
+# Each window: 15 min before release → 15 min after release.
+# Times are Unix timestamps in UTC seconds.
+
+# ── April 2026 ───────────────────────────────────────────────────────
+
+# Wed Apr 1 — ISM Manufacturing PMI (14:00 UTC)
+[[blackout_windows]]
+starts_at = 1775051100   # 2026-04-01 13:45 UTC
+ends_at   = 1775052900   # 2026-04-01 14:15 UTC
+label     = "USD ISM Manufacturing PMI"
+
+# Fri Apr 3 — Non-Farm Payrolls (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1775218500   # 2026-04-03 12:15 UTC
+ends_at   = 1775220300   # 2026-04-03 12:45 UTC
+label     = "USD Non-Farm Payrolls"
+
+# Fri Apr 3 — ISM Services PMI (14:00 UTC)
+[[blackout_windows]]
+starts_at = 1775223900   # 2026-04-03 13:45 UTC
+ends_at   = 1775225700   # 2026-04-03 14:15 UTC
+label     = "USD ISM Services PMI"
+
+# Fri Apr 10 — CPI (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1775823300   # 2026-04-10 12:15 UTC
+ends_at   = 1775825100   # 2026-04-10 12:45 UTC
+label     = "USD CPI"
+
+# Tue Apr 14 — PPI (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1776168900   # 2026-04-14 12:15 UTC
+ends_at   = 1776170700   # 2026-04-14 12:45 UTC
+label     = "USD PPI"
+
+# Wed Apr 15 — Retail Sales (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1776255300   # 2026-04-15 12:15 UTC
+ends_at   = 1776257100   # 2026-04-15 12:45 UTC
+label     = "USD Retail Sales"
+
+# Thu Apr 16 — ECB Rate Decision (12:15 UTC) + Press Conference (12:45 UTC)
+# Merged into single window covering both events.
+[[blackout_windows]]
+starts_at = 1776340800   # 2026-04-16 12:00 UTC
+ends_at   = 1776344400   # 2026-04-16 13:00 UTC
+label     = "ECB Rate Decision + Press Conference"
+
+# Wed Apr 29 — GDP Advance Q1 (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1777464900   # 2026-04-29 12:15 UTC
+ends_at   = 1777466700   # 2026-04-29 12:45 UTC
+label     = "USD GDP Advance Q1"
+
+# Wed Apr 29 — FOMC Rate Decision (18:00 UTC)
+[[blackout_windows]]
+starts_at = 1777484700   # 2026-04-29 17:45 UTC
+ends_at   = 1777486500   # 2026-04-29 18:15 UTC
+label     = "USD FOMC Rate Decision"
+
+# ── May 2026 (first week) ────────────────────────────────────────────
+
+# Fri May 1 — ISM Manufacturing PMI (14:00 UTC)
+[[blackout_windows]]
+starts_at = 1777643100   # 2026-05-01 13:45 UTC
+ends_at   = 1777644900   # 2026-05-01 14:15 UTC
+label     = "USD ISM Manufacturing PMI"
+
+# Fri May 8 — Non-Farm Payrolls (12:30 UTC)
+[[blackout_windows]]
+starts_at = 1778242500   # 2026-05-08 12:15 UTC
+ends_at   = 1778244300   # 2026-05-08 12:45 UTC
+label     = "USD Non-Farm Payrolls"

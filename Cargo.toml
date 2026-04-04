@@ -8,6 +8,7 @@ members = [
     "crates/gadarah-backtest",
     "crates/gadarah-cli",
     "crates/gadarah-feed",
+    "crates/gadarah-gui",
 ]
 
 [workspace.dependencies]
@@ -29,9 +30,10 @@ rand = "0.8"
 thiserror = "2"
 bytes = "1.5"
 futures-util = "0.3"
-tokio-tungstenite = "0.24"
-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls"] }
+tungstenite = { version = "0.24", features = ["rustls"] }
 rustls = "0.23"
+webpki-roots = "0.26"
 
 [profile.release]
 opt-level = 3

@@ -22,6 +22,7 @@ tokio-tungstenite = { workspace = true }
 tungstenite = { workspace = true }
 rustls = { workspace = true }
 rand = { workspace = true }
+webpki-roots = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

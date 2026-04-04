@@ -4,9 +4,25 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::VWAP;
 use crate::types::{
-    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind,
-    TradeSignal,
+    Bar, Direction, HeadId, Regime9, RegimeSignal9, SessionProfile, SignalKind, TradeSignal,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MomentumWindow {
+    London,
+    NewYork,
+}
+
+impl MomentumWindow {
+    fn for_timestamp(timestamp: i64) -> Option<Self> {
+        let minutes = timestamp.rem_euclid(86_400) / 60;
+        match minutes {
+            420..570 => Some(Self::London),  // 07:00-09:30 UTC
+            810..960 => Some(Self::NewYork), // 13:30-16:00 UTC
+            _ => None,
+        }
+    }
+}
 
 /// Configuration for the MomentumHead.
 #[derive(Debug, Clone)]
@@ -32,9 +48,9 @@ impl Default for MomentumConfig {
         Self {
             min_rr: dec!(1.5),
             base_confidence: dec!(0.65),
-            first_hour_bars: 8,
+            first_hour_bars: 4,
             min_range_pips: dec!(15.0),
-            breakout_buffer_pips: dec!(3.0),
+            breakout_buffer_pips: Decimal::ZERO,
             pip_size: dec!(0.0001),
             symbol: String::from("GBPUSD"),
         }
@@ -58,7 +74,7 @@ pub struct MomentumHead {
     session_low: Option<Decimal>,
     range_formed: bool,
     bars_since_open: u32,
-    current_session: Option<Session>,
+    current_window: Option<MomentumWindow>,
     trade_taken: bool,
     bars_processed: usize,
 }
@@ -72,21 +88,15 @@ impl MomentumHead {
             session_low: None,
             range_formed: false,
             bars_since_open: 0,
-            current_session: None,
+            current_window: None,
             trade_taken: false,
             bars_processed: 0,
         }
     }
 
-    /// Returns true if the given hour falls within a valid momentum trading session.
-    /// London: UTC 7-11, NY: UTC 12-20 (we track range during the first portion).
-    fn is_momentum_session(session: Session) -> bool {
-        matches!(session, Session::London | Session::Overlap | Session::NyPm)
-    }
-
     /// Update the opening range tracking for the current session.
-    fn update_session_range(&mut self, bar: &Bar, session: &SessionProfile) {
-        let is_session_start = self.current_session != Some(session.session);
+    fn update_session_range(&mut self, bar: &Bar, active_window: Option<MomentumWindow>) {
+        let is_session_start = self.current_window != active_window;
 
         if is_session_start {
             // Reset range tracking on session change
@@ -95,12 +105,16 @@ impl MomentumHead {
             self.range_formed = false;
             self.bars_since_open = 0;
             self.trade_taken = false;
-            self.current_session = Some(session.session);
+            self.current_window = active_window;
+        }
+
+        if active_window.is_none() {
+            return;
         }
 
         self.bars_since_open += 1;
 
-        // Build opening range (8 M15 bars = 120 min by default)
+        // Build first-hour range (4 M15 bars = 60 min by default).
         if self.bars_since_open <= self.config.first_hour_bars {
             self.session_high = Some(self.session_high.unwrap_or(bar.high).max(bar.high));
             self.session_low = Some(self.session_low.unwrap_or(bar.low).min(bar.low));
@@ -132,30 +146,35 @@ impl Head for MomentumHead {
         regime: &RegimeSignal9,
     ) -> Vec<TradeSignal> {
         self.bars_processed += 1;
+        let active_window = MomentumWindow::for_timestamp(bar.timestamp);
 
         // Check if this head is allowed in the current regime
         if !self.regime_allowed(regime) {
             // Still update internal state even if regime disallows trading
-            let session_changed = self.current_session != Some(session.session);
-            self.vwap.update(bar, session_changed);
-            self.update_session_range(bar, session);
+            let session_changed = self.current_window != active_window;
+            if active_window.is_some() {
+                self.vwap.update(bar, session_changed);
+            } else if session_changed {
+                self.vwap.reset();
+            }
+            self.update_session_range(bar, active_window);
             return Vec::new();
         }
 
-        // Check if we are in a valid momentum session
-        if !Self::is_momentum_session(session.session) {
-            let session_changed = self.current_session != Some(session.session);
-            self.vwap.update(bar, session_changed);
-            self.update_session_range(bar, session);
+        if active_window.is_none() {
+            if self.current_window.is_some() {
+                self.vwap.reset();
+            }
+            self.update_session_range(bar, active_window);
             return Vec::new();
         }
 
         // Update VWAP
-        let session_changed = self.current_session != Some(session.session);
+        let session_changed = self.current_window != active_window;
         let vwap_val = self.vwap.update(bar, session_changed);
 
         // Update range tracking
-        self.update_session_range(bar, session);
+        self.update_session_range(bar, active_window);
 
         // Warmup guard
         if self.bars_processed < self.warmup_bars() {
@@ -280,7 +299,7 @@ impl Head for MomentumHead {
         self.session_low = None;
         self.range_formed = false;
         self.bars_since_open = 0;
-        self.current_session = None;
+        self.current_window = None;
         self.trade_taken = false;
         self.bars_processed = 0;
     }
@@ -291,5 +310,40 @@ impl Head for MomentumHead {
 
     fn regime_allowed(&self, regime: &RegimeSignal9) -> bool {
         regime.regime.allowed_heads().contains(&HeadId::Momentum)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_matches_phase_one_spec() {
+        let cfg = MomentumConfig::default();
+        assert_eq!(cfg.first_hour_bars, 4);
+        assert_eq!(cfg.breakout_buffer_pips, Decimal::ZERO);
+        assert_eq!(cfg.min_rr, dec!(1.5));
+    }
+
+    #[test]
+    fn momentum_windows_match_spec_hours() {
+        assert_eq!(
+            MomentumWindow::for_timestamp(7 * 3600),
+            Some(MomentumWindow::London)
+        );
+        assert_eq!(
+            MomentumWindow::for_timestamp(9 * 3600 + 15 * 60),
+            Some(MomentumWindow::London)
+        );
+        assert_eq!(MomentumWindow::for_timestamp(9 * 3600 + 30 * 60), None);
+        assert_eq!(
+            MomentumWindow::for_timestamp(13 * 3600 + 30 * 60),
+            Some(MomentumWindow::NewYork)
+        );
+        assert_eq!(
+            MomentumWindow::for_timestamp(15 * 3600 + 45 * 60),
+            Some(MomentumWindow::NewYork)
+        );
+        assert_eq!(MomentumWindow::for_timestamp(16 * 3600), None);
     }
 }

@@ -11,46 +11,46 @@ use tracing::{debug, error, info, warn};
 /// Binance WebSocket kline (candlestick) stream.
 pub struct BinanceFeed {
     symbols: Vec<String>,
-    timeframe: Timeframe,
+    _timeframe: Timeframe,
     endpoint: String,
 }
 
 impl crate::Feed for BinanceFeed {
     fn subscribe(&self) -> mpsc::Receiver<FeedMessage> {
-        use std::sync::Arc;
         use tokio::sync::mpsc;
-        
+
         // Create channel for communication
         let (tx, rx) = mpsc::channel(1000);
-        
+
         // Clone data needed for the async task
         let url = self.endpoint.clone();
         let symbols = self.symbols.clone();
-        
+
         // Spawn a background thread that keeps the runtime alive
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("Failed to create runtime");
-            
+
             rt.block_on(async move {
                 info!("Connecting to Binance: {}", url);
-                
+
                 let result = tokio_tungstenite::connect_async(&url).await;
-                
+
                 match result {
                     Ok((ws_stream, _)) => {
                         let _ = tx.send(FeedMessage::Connected).await;
                         info!("Connected to Binance WebSocket");
-                        
+
                         let (_, mut read) = ws_stream.split();
-                        
+
                         while let Some(msg) = read.next().await {
                             match msg {
                                 Ok(data) => {
                                     let text = data.to_text().unwrap_or("");
-                                    if let Err(e) = Self::process_message(text, &symbols, &tx).await {
+                                    if let Err(e) = Self::process_message(text, &symbols, &tx).await
+                                    {
                                         warn!("Message parse error: {}", e);
                                     }
                                 }
@@ -61,7 +61,7 @@ impl crate::Feed for BinanceFeed {
                                 }
                             }
                         }
-                        
+
                         let _ = tx.send(FeedMessage::Disconnected).await;
                     }
                     Err(e) => {
@@ -73,7 +73,7 @@ impl crate::Feed for BinanceFeed {
                 }
             });
         });
-        
+
         rx
     }
 
@@ -100,14 +100,11 @@ impl BinanceFeed {
             .collect::<Vec<_>>()
             .join("/");
 
-        let endpoint = format!(
-            "wss://stream.binance.com:9443/stream?streams={}",
-            streams
-        );
+        let endpoint = format!("wss://stream.binance.com:9443/stream?streams={}", streams);
 
         Ok(Self {
             symbols,
-            timeframe,
+            _timeframe: timeframe,
             endpoint,
         })
     }
@@ -169,7 +166,8 @@ impl BinanceFeed {
         // Binance wrapped message format: {"stream":"...","data":{...}}
         #[derive(Deserialize)]
         struct BinanceWrapper {
-            stream: Option<String>,
+            #[serde(rename = "stream")]
+            _stream: Option<String>,
             data: Option<BinanceKline>,
         }
 
@@ -233,7 +231,7 @@ struct BinanceKline {
     #[serde(rename = "e")]
     e: String, // Event type
     #[serde(rename = "E")]
-    E: i64,    // Event time
+    event_time: i64,
     #[serde(rename = "s")]
     s: String, // Symbol
     #[serde(rename = "k")]
@@ -245,15 +243,15 @@ struct BinanceKlineData {
     #[serde(rename = "t")]
     t: i64, // Kline start time
     #[serde(rename = "T")]
-    T: i64, // Kline close time
+    close_time: i64,
     #[serde(rename = "s")]
     s: String, // Symbol
     #[serde(rename = "i")]
     i: String, // Interval
     #[serde(rename = "f")]
-    f: i64,    // First trade ID
+    f: i64, // First trade ID
     #[serde(rename = "L")]
-    L: i64,    // Last trade ID
+    last_trade_id: i64,
     #[serde(rename = "o")]
     o: String, // Open price
     #[serde(rename = "c")]
@@ -265,9 +263,9 @@ struct BinanceKlineData {
     #[serde(rename = "v")]
     v: String, // Base asset volume
     #[serde(rename = "n")]
-    n: i64,    // Number of trades
+    n: i64, // Number of trades
     #[serde(rename = "x")]
-    x: bool,   // Is this kline closed?
+    x: bool, // Is this kline closed?
     #[serde(rename = "q")]
     q: String, // Quote asset volume
 }
@@ -278,18 +276,15 @@ mod tests {
 
     #[test]
     fn test_binance_feed_creation() {
-        let feed = BinanceFeed::new(
-            vec!["EURUSDT".to_string()],
-            Timeframe::M1,
-        ).unwrap();
-        
+        let feed = BinanceFeed::new(vec!["EURUSDT".to_string()], Timeframe::M1).unwrap();
+
         assert!(feed.endpoint.contains("binance.com"));
         assert!(feed.endpoint.contains("kline_1m"));
     }
 
     #[test]
     fn test_timeframe_mapping() {
-        for (tf, expected) in vec![
+        for (tf, expected) in [
             (Timeframe::M1, "1m"),
             (Timeframe::M5, "5m"),
             (Timeframe::M15, "15m"),

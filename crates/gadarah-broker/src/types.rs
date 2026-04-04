@@ -117,6 +117,16 @@ pub struct Tick {
     pub timestamp: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Reconcile result (crash/restart recovery)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct ReconcileResult {
+    pub open_position_count: usize,
+    pub pending_order_count: usize,
+}
+
 impl Tick {
     pub fn spread(&self) -> Decimal {
         self.ask - self.bid

@@ -1,9 +1,8 @@
 //! cTrader OpenAPI Message Types
-//! 
+//!
 //! Simplified message types for cTrader communication.
 //! These map to the ProtoOAPayloadType enum values from the OpenAPI protocol.
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 /// Payload type IDs from ProtoOAPayloadType enum

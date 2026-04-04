@@ -1,4 +1,5 @@
 pub mod account;
+pub mod compliance;
 pub mod consistency;
 pub mod daily_pnl;
 pub mod drift;
@@ -14,6 +15,10 @@ pub mod types;
 
 // Re-export key types at crate root for ergonomic imports
 pub use account::{AccountPhase, AccountState, FirmConfig};
+pub use compliance::{
+    ComplianceBlackoutWindow, ComplianceConfig, ComplianceOpenExposure, ComplianceRejection,
+    FundingPipsComplianceConfig, FundingPipsComplianceManager, PropFirmComplianceManager,
+};
 pub use consistency::ConsistencyTracker;
 pub use daily_pnl::{DailyPnlConfig, DailyPnlEngine, DayState};
 pub use drift::{DriftBenchmarks, DriftConfig, DriftDetector, DriftSignal, TradeResult};

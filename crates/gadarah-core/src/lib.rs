@@ -15,9 +15,17 @@ pub use decimal_math::{decimal_ln, decimal_sqrt};
 
 pub use regime::RegimeClassifier;
 
-pub use heads::{AsianRangeHead, BreakoutHead, Head, MomentumHead};
+pub use heads::{
+    AsianRangeHead, BreakoutHead, GridHead, Head, MomentumHead, NewsHead, ScalpM1Head,
+    ScalpM5Head, SmcHead, TrendHead, VolProfileHead,
+};
+
+pub use heads::{
+    grid::GridConfig, news::NewsConfig, scalp_m1::ScalpM1Config, scalp_m5::ScalpM5Config,
+    smc::SmcConfig, trend::TrendConfig, vol_profile::VolProfileConfig,
+};
 
 pub use indicators::{
     BBValues, BBWidthPercentile, BollingerBands, ChoppinessIndex, HurstExponent, WilderSmooth, ADX,
-    ATR, EMA, VWAP,
+    ATR, EMA, RSI, VWAP,
 };

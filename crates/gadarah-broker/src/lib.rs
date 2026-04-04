@@ -7,14 +7,17 @@ pub mod mock;
 pub mod traits;
 pub mod types;
 
-pub use client::{create_ctrader_broker, CtraderClient, CtraderConfig};
-pub use codec::CtraderCodec;
-pub use ctrader::{ApplicationAuthReq, AccountAuthReq, NewOrderReq, OrderResponse};
+// prost-generated cTrader OpenAPI types (compiled from proto/*.proto)
+pub(crate) mod proto {
+    #![allow(clippy::enum_variant_names)]
+    include!(concat!(env!("OUT_DIR"), "/_.rs"));
+}
+
+pub use client::{CtraderClient, CtraderConfig};
 pub use error::BrokerError;
-pub use messages::*;
 pub use mock::{forex_symbol, MockBroker, MockConfig};
 pub use traits::Broker;
 pub use types::{
     BrokerAccountInfo, CloseReport, CloseRequest, FillReport, ModifyRequest, OrderRequest,
-    OrderType, SymbolSpec, Tick,
+    OrderType, ReconcileResult, SymbolSpec, Tick,
 };

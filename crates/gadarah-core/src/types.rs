@@ -105,20 +105,48 @@ pub enum Regime9 {
 }
 
 impl Regime9 {
-    /// Phase 1 MVP: only 3 heads
+    /// Phase 2: all 10 heads gated by regime suitability.
+    ///
+    /// ScalpM1/ScalpM5 are further session-gated internally and will self-block
+    /// outside Overlap/London regardless of this list.
+    /// News fires on spike detection in any regime; compliance layer gates per firm.
+    /// Grid is active in all ranging/choppy regimes.
+    /// Smc and Trend require trending/breakout context.
     pub fn allowed_heads(&self) -> &[HeadId] {
         match self {
-            Self::StrongTrendUp | Self::StrongTrendDown => {
-                &[HeadId::Momentum, HeadId::Breakout, HeadId::AsianRange]
-            }
-            Self::WeakTrendUp | Self::WeakTrendDown => {
-                &[HeadId::Momentum, HeadId::AsianRange, HeadId::Breakout]
-            }
-            Self::RangingTight => &[HeadId::AsianRange, HeadId::Breakout],
-            Self::RangingWide => &[HeadId::AsianRange, HeadId::Breakout],
-            Self::Choppy => &[HeadId::AsianRange],
-            Self::BreakoutPending => &[HeadId::Breakout, HeadId::AsianRange],
-            Self::Transitioning => &[HeadId::AsianRange, HeadId::Breakout],
+            Self::StrongTrendUp | Self::StrongTrendDown => &[
+                HeadId::Momentum,
+                HeadId::Breakout,
+                HeadId::Trend,
+                HeadId::Smc,
+                HeadId::ScalpM5,
+                HeadId::ScalpM1,
+            ],
+            Self::WeakTrendUp | Self::WeakTrendDown => &[
+                HeadId::Momentum,
+                HeadId::AsianRange,
+                HeadId::Trend,
+                HeadId::VolProfile,
+            ],
+            Self::RangingTight => &[
+                HeadId::AsianRange,
+                HeadId::Grid,
+                HeadId::VolProfile,
+            ],
+            Self::RangingWide => &[
+                HeadId::AsianRange,
+                HeadId::Breakout,
+                HeadId::Grid,
+                HeadId::Smc,
+            ],
+            Self::Choppy => &[HeadId::Grid, HeadId::ScalpM5],
+            Self::BreakoutPending => &[HeadId::Breakout, HeadId::Smc, HeadId::News],
+            Self::Transitioning => &[
+                HeadId::AsianRange,
+                HeadId::Momentum,
+                HeadId::VolProfile,
+                HeadId::ScalpM5,
+            ],
         }
     }
 
@@ -265,4 +293,54 @@ pub fn utc_hour(timestamp: i64) -> u8 {
 /// Extract the day number (unix days since epoch) from a unix timestamp.
 pub fn utc_day(timestamp: i64) -> i64 {
     timestamp.div_euclid(86400)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_heads_phase2_spec() {
+        // Strong trend: core 3 Phase 1 heads + Trend, Smc, scalpers
+        let strong = Regime9::StrongTrendUp.allowed_heads();
+        assert!(strong.contains(&HeadId::Momentum));
+        assert!(strong.contains(&HeadId::Breakout));
+        assert!(strong.contains(&HeadId::Trend));
+        assert!(strong.contains(&HeadId::Smc));
+        assert!(strong.contains(&HeadId::ScalpM5));
+        assert!(strong.contains(&HeadId::ScalpM1));
+
+        // Weak trend: momentum, asian, trend, vol profile
+        let weak = Regime9::WeakTrendUp.allowed_heads();
+        assert!(weak.contains(&HeadId::Momentum));
+        assert!(weak.contains(&HeadId::AsianRange));
+        assert!(weak.contains(&HeadId::Trend));
+        assert!(weak.contains(&HeadId::VolProfile));
+
+        // Ranging tight: asian range + grid + vol profile
+        let tight = Regime9::RangingTight.allowed_heads();
+        assert!(tight.contains(&HeadId::AsianRange));
+        assert!(tight.contains(&HeadId::Grid));
+        assert!(tight.contains(&HeadId::VolProfile));
+
+        // Choppy: only grid + scalp m5
+        let choppy = Regime9::Choppy.allowed_heads();
+        assert!(choppy.contains(&HeadId::Grid));
+        assert!(choppy.contains(&HeadId::ScalpM5));
+        assert!(!choppy.contains(&HeadId::Momentum));
+
+        // Breakout pending: breakout + smc + news
+        let bo = Regime9::BreakoutPending.allowed_heads();
+        assert!(bo.contains(&HeadId::Breakout));
+        assert!(bo.contains(&HeadId::Smc));
+        assert!(bo.contains(&HeadId::News));
+    }
+
+    #[test]
+    fn trending_flag_only_marks_trend_regimes() {
+        assert!(Regime9::StrongTrendDown.is_trending());
+        assert!(Regime9::WeakTrendUp.is_trending());
+        assert!(!Regime9::RangingWide.is_trending());
+        assert!(!Regime9::Transitioning.is_trending());
+    }
 }

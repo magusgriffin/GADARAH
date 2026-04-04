@@ -1,4 +1,6 @@
-use std::path::Path;
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -6,8 +8,8 @@ use serde::Deserialize;
 
 use gadarah_broker::MockConfig;
 use gadarah_risk::{
-    DailyPnlConfig, DriftBenchmarks, DriftConfig, EquityCurveFilterConfig, FirmConfig,
-    PyramidConfig, TradeManagerConfig,
+    ComplianceBlackoutWindow, DailyPnlConfig, DriftBenchmarks, DriftConfig,
+    EquityCurveFilterConfig, FirmConfig, PyramidConfig, TradeManagerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,6 +25,8 @@ pub struct GadarahConfig {
     pub pyramid: PyramidToml,
     pub drift: DriftToml,
     pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub compliance: ComplianceToml,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +85,19 @@ pub struct ExecutionConfig {
     pub min_net_rr: Decimal,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ComplianceToml {
+    #[serde(default)]
+    pub fundingpips: FundingPipsComplianceToml,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FundingPipsComplianceToml {
+    pub blackout_file: Option<String>,
+    #[serde(default)]
+    pub blackout_windows: Vec<ComplianceBlackoutWindow>,
+}
+
 // ---------------------------------------------------------------------------
 // Firm config file (config/firms/*.toml)
 // ---------------------------------------------------------------------------
@@ -111,6 +128,8 @@ pub struct BrokerToml {
     pub port: u16,
     pub client_id_env: String,
     pub client_secret_env: String,
+    pub access_token_env: Option<String>,
+    pub account_id_env: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +216,23 @@ impl GadarahConfig {
     pub fn is_challenge_mode(&self) -> bool {
         self.engine.mode == "challenge"
     }
+
+    pub fn fundingpips_blackout_windows(
+        &self,
+        config_path: &Path,
+    ) -> Result<Vec<ComplianceBlackoutWindow>, String> {
+        let mut windows = self.compliance.fundingpips.blackout_windows.clone();
+
+        if let Some(path) = self.compliance.fundingpips.blackout_file.as_deref() {
+            let resolved = resolve_relative_path(config_path, path);
+            let mut file_windows = load_blackout_file(&resolved)?;
+            windows.append(&mut file_windows);
+        }
+
+        validate_blackout_windows(&windows)?;
+        windows.sort_by_key(|window| (window.starts_at, window.ends_at, window.label.clone()));
+        Ok(windows)
+    }
 }
 
 impl FirmToml {
@@ -213,5 +249,185 @@ impl FirmToml {
             max_positions: self.max_positions,
             profit_split_pct: self.profit_split_pct,
         }
+    }
+}
+
+impl BrokerToml {
+    pub fn access_token_env_name(&self) -> String {
+        self.access_token_env.clone().unwrap_or_else(|| {
+            self.client_id_env
+                .strip_suffix("_CLIENT_ID")
+                .map(|prefix| format!("{prefix}_ACCESS_TOKEN"))
+                .unwrap_or_else(|| "GADARAH_CTRADER_ACCESS_TOKEN".to_string())
+        })
+    }
+
+    pub fn account_id_env_name(&self) -> String {
+        self.account_id_env.clone().unwrap_or_else(|| {
+            self.client_id_env
+                .strip_suffix("_CLIENT_ID")
+                .map(|prefix| format!("{prefix}_ACCOUNT_ID"))
+                .unwrap_or_else(|| "GADARAH_CTRADER_ACCOUNT_ID".to_string())
+        })
+    }
+}
+
+fn resolve_relative_path(config_path: &Path, raw: &str) -> PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(path)
+}
+
+fn load_blackout_file(path: &Path) -> Result<Vec<ComplianceBlackoutWindow>, String> {
+    #[derive(Debug, Default, Deserialize)]
+    struct BlackoutFile {
+        #[serde(default)]
+        blackout_windows: Vec<ComplianceBlackoutWindow>,
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read blackout file {}: {}", path.display(), err))?;
+    let parsed = toml::from_str::<BlackoutFile>(&content)
+        .map_err(|err| format!("Failed to parse blackout file {}: {}", path.display(), err))?;
+    Ok(parsed.blackout_windows)
+}
+
+fn validate_blackout_windows(windows: &[ComplianceBlackoutWindow]) -> Result<(), String> {
+    for window in windows {
+        if window.ends_at < window.starts_at {
+            return Err(format!(
+                "Invalid blackout window {}: ends_at {} is before starts_at {}",
+                window.label, window.ends_at, window.starts_at
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("gadarah_config_{name}_{nanos}"))
+    }
+
+    fn minimal_config(extra: &str) -> String {
+        format!(
+            r#"
+[engine]
+mode = "challenge"
+symbols = ["EURUSD"]
+log_level = "info"
+db_path = "data/gadarah.db"
+
+[risk]
+base_risk_pct = 0.74
+max_portfolio_heat = 2.0
+daily_stop_pct = 1.5
+daily_target_pct = 2.0
+
+[kill_switch]
+daily_dd_trigger_pct = 95.0
+total_dd_trigger_pct = 95.0
+consecutive_loss_limit = 3
+cooldown_minutes = 30
+
+[equity_curve]
+ma_period = 20
+below_ma_mult = 0.50
+deep_below_mult = 0.25
+deep_threshold_pct = 2.0
+
+[pyramid]
+enabled = false
+min_r_to_add = 1.0
+max_layers = 2
+add_size_fraction = 0.5
+
+[drift]
+min_trades = 20
+win_rate_alert_delta = 0.12
+win_rate_halt_delta = 0.20
+avg_r_halt = -0.10
+slippage_alert_mult = 2.0
+
+[execution]
+max_spread_atr_ratio = 0.30
+stale_price_seconds = 2
+min_net_rr = 1.2
+
+{extra}
+"#
+        )
+    }
+
+    #[test]
+    fn fundingpips_blackout_windows_merge_inline_and_file() {
+        let dir = temp_path("merge");
+        std::fs::create_dir_all(&dir).unwrap();
+        let blackout_file = dir.join("fundingpips_blackouts.toml");
+        std::fs::write(
+            &blackout_file,
+            r#"
+[[blackout_windows]]
+starts_at = 300
+ends_at = 360
+label = "USD CPI"
+"#,
+        )
+        .unwrap();
+
+        let raw = minimal_config(
+            r#"
+[compliance.fundingpips]
+blackout_file = "fundingpips_blackouts.toml"
+
+[[compliance.fundingpips.blackout_windows]]
+starts_at = 120
+ends_at = 180
+label = "Inline window"
+"#,
+        );
+
+        let config = toml::from_str::<GadarahConfig>(&raw).unwrap();
+        let windows = config
+            .fundingpips_blackout_windows(&dir.join("gadarah.toml"))
+            .unwrap();
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].label, "Inline window");
+        assert_eq!(windows[1].label, "USD CPI");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fundingpips_blackout_windows_reject_invalid_range() {
+        let raw = minimal_config(
+            r#"
+[[compliance.fundingpips.blackout_windows]]
+starts_at = 500
+ends_at = 400
+label = "Broken window"
+"#,
+        );
+
+        let config = toml::from_str::<GadarahConfig>(&raw).unwrap();
+        let err = config
+            .fundingpips_blackout_windows(Path::new("config/gadarah.toml"))
+            .unwrap_err();
+
+        assert!(err.contains("Invalid blackout window Broken window"));
     }
 }

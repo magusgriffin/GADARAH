@@ -113,8 +113,11 @@ impl BacktestStats {
         // Drawdown
         let (max_dd_pct, max_dd_usd) = compute_drawdown(trades, starting_balance);
 
-        // Sharpe ratio (simplified: daily returns not available, use per-trade)
-        let sharpe = compute_sharpe(trades);
+        // Sharpe ratio — annualised using daily PnL returns.
+        // Trades are grouped by the calendar day they were opened; the daily
+        // return is that day's net PnL divided by the running equity at the
+        // start of that day. The ratio is then annualised by √252.
+        let sharpe = compute_sharpe_daily(trades, starting_balance);
 
         // Expectancy in R
         let avg_win_r = if win_count > 0 {
@@ -212,16 +215,47 @@ fn compute_drawdown(trades: &[TradeResult], starting_balance: Decimal) -> (Decim
     (max_dd_pct, max_dd_usd)
 }
 
-fn compute_sharpe(trades: &[TradeResult]) -> Decimal {
-    if trades.len() < 2 {
+/// Annualised Sharpe ratio using daily return series.
+///
+/// Groups trades by the calendar day they were opened (UTC), computes each
+/// day's net PnL relative to the running equity at that day's open, then
+/// applies the standard Sharpe formula × √252.
+///
+/// Falls back to Decimal::ZERO if fewer than 2 distinct trading days exist.
+fn compute_sharpe_daily(trades: &[TradeResult], starting_balance: Decimal) -> Decimal {
+    if trades.is_empty() {
         return Decimal::ZERO;
     }
 
-    let n = Decimal::from(trades.len());
-    let returns: Vec<Decimal> = trades.iter().map(|t| t.r_multiple).collect();
-    let mean = returns.iter().sum::<Decimal>() / n;
+    // Aggregate PnL per day (unix day number = timestamp / 86400).
+    let mut day_pnl: std::collections::BTreeMap<i64, Decimal> = std::collections::BTreeMap::new();
+    for t in trades {
+        let day = t.opened_at / 86400;
+        *day_pnl.entry(day).or_insert(Decimal::ZERO) += t.pnl;
+    }
 
-    let variance = returns
+    if day_pnl.len() < 2 {
+        return Decimal::ZERO;
+    }
+
+    // Compute daily returns as PnL / running_equity_at_day_start.
+    let mut daily_returns: Vec<Decimal> = Vec::with_capacity(day_pnl.len());
+    let mut running_equity = starting_balance;
+    for (_day, pnl) in &day_pnl {
+        if running_equity.is_zero() {
+            break;
+        }
+        daily_returns.push(*pnl / running_equity);
+        running_equity += *pnl;
+    }
+
+    let n = Decimal::from(daily_returns.len());
+    if n < dec!(2) {
+        return Decimal::ZERO;
+    }
+
+    let mean = daily_returns.iter().sum::<Decimal>() / n;
+    let variance = daily_returns
         .iter()
         .map(|r| (*r - mean) * (*r - mean))
         .sum::<Decimal>()
@@ -231,13 +265,14 @@ fn compute_sharpe(trades: &[TradeResult]) -> Decimal {
         return Decimal::ZERO;
     }
 
-    // Approximate sqrt using Newton's method (good enough for stats)
     let std_dev = gadarah_core::decimal_sqrt(variance);
     if std_dev.is_zero() {
         return Decimal::ZERO;
     }
 
-    mean / std_dev
+    // Annualise: multiply by √252 (trading days per year).
+    let sqrt_252 = gadarah_core::decimal_sqrt(dec!(252));
+    (mean / std_dev) * sqrt_252
 }
 
 fn count_unique_days(trades: &[TradeResult]) -> usize {

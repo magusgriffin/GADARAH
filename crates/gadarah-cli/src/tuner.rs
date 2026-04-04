@@ -2,14 +2,15 @@
 //!
 //! Runs stress tests with varying parameters to find robust configurations.
 
-use gadarah_backtest::{
-    run_replay, run_stress_test, BacktestStats, MonteCarloConfig, ReplayConfig, StressConfig,
+use gadarah_backtest::{run_replay, run_stress_test, ReplayConfig, StressConfig};
+use gadarah_core::{
+    heads::{
+        asian_range::{AsianRangeConfig, AsianRangeHead},
+        breakout::{BreakoutConfig, BreakoutHead},
+        momentum::{MomentumConfig, MomentumHead},
+    },
+    Timeframe,
 };
-use gadarah_core::{Timeframe, heads::{
-    asian_range::{AsianRangeConfig, AsianRangeHead},
-    breakout::{BreakoutConfig, BreakoutHead},
-    momentum::{MomentumConfig, MomentumHead},
-}};
 use gadarah_data::{load_all_bars, Database};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -21,18 +22,13 @@ pub struct TuneResult {
     pub loss_mult: Decimal,
     pub wr_reduction: Decimal,
     pub slippage: Decimal,
-    pub original_pf: Decimal,
     pub stressed_pf: Decimal,
     pub stressed_dd: Decimal,
     pub pass: bool,
 }
 
 /// Run stress test tuning across multiple symbols and parameter ranges
-pub fn tune_stress_params(
-    db_path: &str,
-    symbols: &[&str],
-    _iterations: usize,
-) -> Vec<TuneResult> {
+pub fn tune_stress_params(db_path: &str, symbols: &[&str], _iterations: usize) -> Vec<TuneResult> {
     let mut results = Vec::new();
 
     // Parameter ranges to test
@@ -69,7 +65,11 @@ pub fn tune_stress_params(
             continue;
         }
 
-        println!("  Backtest: {} trades, PF={:.2}", result.trades.len(), result.stats.profit_factor);
+        println!(
+            "  Backtest: {} trades, PF={:.2}",
+            result.trades.len(),
+            result.stats.profit_factor
+        );
 
         // Test each parameter combination
         for loss_mult in &loss_mults {
@@ -81,12 +81,7 @@ pub fn tune_stress_params(
                         extra_slippage_usd: *slip,
                     };
 
-                    let stress = run_stress_test(
-                        &result.trades,
-                        dec!(10000),
-                        &stress_cfg,
-                        None,
-                    );
+                    let stress = run_stress_test(&result.trades, dec!(10000), &stress_cfg, None);
 
                     let pass = stress.stressed_stats.profit_factor > dec!(1.0)
                         && stress.stressed_stats.max_drawdown_pct < dec!(10.0);
@@ -95,7 +90,6 @@ pub fn tune_stress_params(
                         loss_mult: *loss_mult,
                         wr_reduction: *wr_red,
                         slippage: *slip,
-                        original_pf: result.stats.profit_factor,
                         stressed_pf: stress.stressed_stats.profit_factor,
                         stressed_dd: stress.stressed_stats.max_drawdown_pct,
                         pass,
@@ -135,7 +129,10 @@ pub fn find_robust_params(results: &[TuneResult]) -> StressConfig {
     if let Some((lm, wr, slip, rate)) = best {
         println!(
             "\nBest stress params: loss_mult={}, wr_reduction={}, slippage={} (pass rate: {:.1}%)",
-            lm, wr, slip, rate * dec!(100)
+            lm,
+            wr,
+            slip,
+            rate * dec!(100)
         );
         StressConfig {
             loss_multiplier: *lm,
@@ -150,7 +147,11 @@ pub fn find_robust_params(results: &[TuneResult]) -> StressConfig {
 fn make_replay_config(symbol: &str, balance: Decimal) -> ReplayConfig {
     ReplayConfig {
         symbol: symbol.to_string(),
-        pip_size: if symbol.contains("JPY") { dec!(0.01) } else { dec!(0.0001) },
+        pip_size: if symbol.contains("JPY") {
+            dec!(0.01)
+        } else {
+            dec!(0.0001)
+        },
         pip_value_per_lot: dec!(10.0),
         starting_balance: balance,
         risk_pct: dec!(0.74),
@@ -165,7 +166,11 @@ fn make_replay_config(symbol: &str, balance: Decimal) -> ReplayConfig {
 }
 
 fn make_heads(symbol: &str) -> Vec<Box<dyn gadarah_core::Head>> {
-    let pip_size = if symbol.contains("JPY") { dec!(0.01) } else { dec!(0.0001) };
+    let pip_size = if symbol.contains("JPY") {
+        dec!(0.01)
+    } else {
+        dec!(0.0001)
+    };
     vec![
         Box::new(BreakoutHead::new(BreakoutConfig {
             squeeze_pctile: dec!(10.0),
@@ -188,19 +193,22 @@ fn make_heads(symbol: &str) -> Vec<Box<dyn gadarah_core::Head>> {
             pip_size,
             symbol: symbol.to_string(),
         })),
-        Box::new(AsianRangeHead::new(AsianRangeConfig {
-            asian_start_utc: 0,
-            asian_end_utc: 4,
-            entry_window_end: 9,
-            min_range_pips: dec!(15.0),
-            max_range_pips: dec!(60.0),
-            sl_buffer_pips: dec!(5.0),
-            tp1_multiplier: dec!(1.5),
-            tp2_multiplier: dec!(2.5),
-            min_rr: dec!(1.5),
-            max_trades_per_day: 3,
-            symbol: symbol.to_string(),
-            base_confidence: dec!(0.5),
-        }, pip_size)),
+        Box::new(AsianRangeHead::new(
+            AsianRangeConfig {
+                asian_start_utc: 0,
+                asian_end_utc: 4,
+                entry_window_end: 9,
+                min_range_pips: dec!(15.0),
+                max_range_pips: dec!(60.0),
+                sl_buffer_pips: dec!(5.0),
+                tp1_multiplier: dec!(1.5),
+                tp2_multiplier: dec!(2.5),
+                min_rr: dec!(1.5),
+                max_trades_per_day: 3,
+                symbol: symbol.to_string(),
+                base_confidence: dec!(0.5),
+            },
+            pip_size,
+        )),
     ]
 }

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 pub trait Feed: Send + Sync {
     /// Start the feed and stream messages (async).
     fn subscribe(&self) -> mpsc::Receiver<FeedMessage>;
-    
+
     /// Get the feed name.
     fn name(&self) -> &str;
 }
@@ -55,7 +55,9 @@ impl FeedBuilder {
                 self.symbols,
                 self.timeframe,
             )?)),
-            FeedType::Oanda => Err(FeedError::NotImplemented("OANDA feed not yet implemented".into())),
+            FeedType::Oanda => Err(FeedError::NotImplemented(
+                "OANDA feed not yet implemented".into(),
+            )),
         }
     }
 }
@@ -77,40 +79,53 @@ impl BarStreamer {
     /// Process a tick and return a completed bar if the period closed.
     pub fn process_tick(&mut self, tick: &Tick) -> Option<Bar> {
         let bar_ts = align_to_timeframe(tick.timestamp, self.timeframe);
-        
-        let key = format!("{}:{}", tick.symbol, bar_ts);
-        
-        let bar = self.current_bars.entry(key.clone()).or_insert_with(|| Bar {
-            timestamp: bar_ts,
-            open: tick.bid,
-            high: tick.bid,
-            low: tick.bid,
-            close: tick.bid,
-            volume: 0,
-            timeframe: self.timeframe,
-        });
 
-        // Update OHLC
-        if tick.bid > bar.high { bar.high = tick.bid; }
-        if tick.bid < bar.low { bar.low = tick.bid; }
-        bar.close = tick.bid;
-        bar.volume += tick.volume;
-
-        // Check if we crossed to a new period
-        if tick.timestamp >= bar_ts + duration_secs(self.timeframe) as i64 {
-            let completed = self.current_bars.remove(&key);
-            completed
-        } else {
-            None
+        match self.current_bars.get_mut(&tick.symbol) {
+            Some(current) if current.timestamp == bar_ts => {
+                if tick.bid > current.high {
+                    current.high = tick.bid;
+                }
+                if tick.bid < current.low {
+                    current.low = tick.bid;
+                }
+                current.close = tick.bid;
+                current.volume += tick.volume;
+                None
+            }
+            Some(current) => {
+                let completed = current.clone();
+                *current = Bar {
+                    timestamp: bar_ts,
+                    open: tick.bid,
+                    high: tick.bid,
+                    low: tick.bid,
+                    close: tick.bid,
+                    volume: tick.volume,
+                    timeframe: self.timeframe,
+                };
+                Some(completed)
+            }
+            None => {
+                self.current_bars.insert(
+                    tick.symbol.clone(),
+                    Bar {
+                        timestamp: bar_ts,
+                        open: tick.bid,
+                        high: tick.bid,
+                        low: tick.bid,
+                        close: tick.bid,
+                        volume: tick.volume,
+                        timeframe: self.timeframe,
+                    },
+                );
+                None
+            }
         }
     }
 
     /// Get the current incomplete bar for a symbol.
     pub fn current_bar(&self, symbol: &str) -> Option<&Bar> {
-        let now = chrono::Utc::now().timestamp();
-        let bar_ts = align_to_timeframe(now, self.timeframe);
-        let key = format!("{}:{}", symbol, bar_ts);
-        self.current_bars.get(&key)
+        self.current_bars.get(symbol)
     }
 }
 
@@ -127,5 +142,50 @@ fn duration_secs(tf: gadarah_core::Timeframe) -> u32 {
         gadarah_core::Timeframe::H1 => 3600,
         gadarah_core::Timeframe::H4 => 14400,
         gadarah_core::Timeframe::D1 => 86400,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    fn tick(ts: i64, bid: rust_decimal::Decimal) -> Tick {
+        Tick {
+            symbol: "EURUSD".to_string(),
+            bid,
+            ask: bid + dec!(0.0001),
+            volume: 1,
+            timestamp: ts,
+        }
+    }
+
+    #[test]
+    fn emits_completed_bar_when_bucket_rolls() {
+        let mut streamer = BarStreamer::new(gadarah_core::Timeframe::M1);
+
+        assert!(streamer.process_tick(&tick(60, dec!(1.1000))).is_none());
+        assert!(streamer.process_tick(&tick(90, dec!(1.1005))).is_none());
+
+        let completed = streamer
+            .process_tick(&tick(120, dec!(1.1010)))
+            .expect("expected previous bar to close on new bucket");
+
+        assert_eq!(completed.timestamp, 60);
+        assert_eq!(completed.open, dec!(1.1000));
+        assert_eq!(completed.close, dec!(1.1005));
+        assert_eq!(completed.high, dec!(1.1005));
+        assert_eq!(completed.low, dec!(1.1000));
+        assert_eq!(completed.volume, 2);
+    }
+
+    #[test]
+    fn current_bar_tracks_by_symbol() {
+        let mut streamer = BarStreamer::new(gadarah_core::Timeframe::M5);
+        streamer.process_tick(&tick(300, dec!(1.2000)));
+
+        let current = streamer.current_bar("EURUSD").expect("missing current bar");
+        assert_eq!(current.timestamp, 300);
+        assert_eq!(current.open, dec!(1.2000));
     }
 }

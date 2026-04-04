@@ -55,7 +55,7 @@ impl FeedMessage {
     pub fn is_tick(&self) -> bool {
         matches!(self, FeedMessage::Tick(_))
     }
-    
+
     pub fn is_bar(&self) -> bool {
         matches!(self, FeedMessage::Bar(_))
     }

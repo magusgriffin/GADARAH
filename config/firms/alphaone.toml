@@ -1,0 +1,17 @@
+[firm]
+name = "Alpha Capital - Alpha One"
+challenge_type = "alpha_one"
+profit_target_pct = 10.0
+daily_dd_limit_pct = 4.0
+max_dd_limit_pct = 6.0
+dd_mode = "trailing_locked_to_start"
+min_trading_days = 1
+news_trading_allowed = true
+max_positions = 5
+profit_split_pct = 80.0
+
+[broker]
+host = "live.ctraderapi.com"
+port = 5035
+client_id_env = "GADARAH_ALPHA_CLIENT_ID"
+client_secret_env = "GADARAH_ALPHA_CLIENT_SECRET"

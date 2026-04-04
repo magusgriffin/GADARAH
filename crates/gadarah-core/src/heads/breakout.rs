@@ -42,10 +42,10 @@ impl Default for BreakoutConfig {
             expansion_pctile: dec!(0.50),
             min_squeeze_bars: 10,
             volume_mult: dec!(1.3),
-            tp1_atr_mult: dec!(2.5),
-            tp2_atr_mult: dec!(4.0),
-            min_rr: dec!(1.3),
-            fakeout_bars: 3,
+            tp1_atr_mult: dec!(2.0),
+            tp2_atr_mult: dec!(3.0),
+            min_rr: dec!(1.8),
+            fakeout_bars: 2,
             symbol: String::from("GBPUSD"),
             base_confidence: dec!(0.60),
         }
@@ -261,16 +261,17 @@ impl Head for BreakoutHead {
             if let Some(dir) = direction {
                 let entry = bar.close;
 
-                // SL: BB midpoint (tighter than opposite band, better R:R)
-                let stop_loss = _bb_mid;
-
-                // TP based on BB width (captures expansion better than lagging ATR)
-                let half_bb = (bb_upper - bb_lower) / dec!(2);
-                let tp_dist = (half_bb * self.config.tp1_atr_mult).max(atr * dec!(2));
-                let tp2_dist = (half_bb * self.config.tp2_atr_mult).max(atr * dec!(3));
-                let (take_profit, take_profit2) = match dir {
-                    Direction::Buy => (entry + tp_dist, entry + tp2_dist),
-                    Direction::Sell => (entry - tp_dist, entry - tp2_dist),
+                let (stop_loss, take_profit, take_profit2) = match dir {
+                    Direction::Buy => (
+                        bb_lower,
+                        entry + atr * self.config.tp1_atr_mult,
+                        entry + atr * self.config.tp2_atr_mult,
+                    ),
+                    Direction::Sell => (
+                        bb_upper,
+                        entry - atr * self.config.tp1_atr_mult,
+                        entry - atr * self.config.tp2_atr_mult,
+                    ),
                 };
 
                 // Check minimum R:R
@@ -348,10 +349,26 @@ impl Head for BreakoutHead {
     }
 
     fn warmup_bars(&self) -> usize {
-        100
+        50
     }
 
     fn regime_allowed(&self, regime: &RegimeSignal9) -> bool {
         regime.regime.allowed_heads().contains(&HeadId::Breakout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_matches_phase_one_spec() {
+        let cfg = BreakoutConfig::default();
+        assert_eq!(cfg.squeeze_pctile, dec!(0.30));
+        assert_eq!(cfg.expansion_pctile, dec!(0.50));
+        assert_eq!(cfg.tp1_atr_mult, dec!(2.0));
+        assert_eq!(cfg.tp2_atr_mult, dec!(3.0));
+        assert_eq!(cfg.min_rr, dec!(1.8));
+        assert_eq!(cfg.fakeout_bars, 2);
     }
 }
