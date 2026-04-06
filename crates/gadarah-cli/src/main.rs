@@ -18,12 +18,17 @@ use gadarah_core::Timeframe;
 use gadarah_data::{
     aggregate_bars, bar_time_range, count_bars, detect_csv_format, import_csv, import_dataset_dir,
     list_symbols, list_timeframes, load_all_bars, CsvFormat, Database, DatasetImportOptions,
+    FetchConfig, stream_and_insert,
 };
 
 const DEFAULT_CONFIG_PATH: &str = "config/gadarah.toml";
 const DEFAULT_DB_PATH: &str = "data/gadarah.db";
 
 fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -50,6 +55,7 @@ fn main() {
         "synth" => cmd_synth(&args[2..]),
         "full" => cmd_full(&args[2..]),
         "tune" => cmd_tune(&args[2..]),
+        "fetch" => cmd_fetch(&args[2..]),
         "live" => phase1::run_live(&args[2..]),
         "benchmarks" => phase1::run_benchmarks(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
@@ -79,6 +85,7 @@ fn print_help() {
     println!("Usage: gadarah <command> [options]");
     println!();
     println!("Commands:");
+    println!("  fetch             --symbol <sym> [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--timeframes M15,H1] [--db <path>]");
     println!("  import            <csv_file> <symbol> <timeframe> [format] [--db <path>]");
     println!("  bulk-import       <dir> [--db <path>]");
     println!("  aggregate         <from_tf> <to_tf> [--symbol <sym>] [--db <path>]");
@@ -95,6 +102,71 @@ fn print_help() {
     println!("  tune              [--db <path>] [--symbols <csv>] [--iterations <n>]");
     println!("  live              [phase1 options]");
     println!("  benchmarks        [phase1 options]");
+}
+
+fn cmd_fetch(args: &[String]) {
+    use chrono::NaiveDate;
+    use gadarah_core::Timeframe;
+
+    let symbol = match arg_value(args, "--symbol") {
+        Some(s) => s,
+        None => {
+            eprintln!("Usage: gadarah fetch --symbol <sym> [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--timeframes M15,H1] [--db <path>]");
+            return;
+        }
+    };
+
+    let today = chrono::Utc::now().date_naive();
+    let two_years_ago = today - chrono::Duration::days(730);
+
+    let from = arg_value(args, "--from")
+        .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok())
+        .unwrap_or(two_years_ago);
+    let to = arg_value(args, "--to")
+        .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| today - chrono::Duration::days(1));
+
+    let timeframes: Vec<Timeframe> = arg_value(args, "--timeframes")
+        .unwrap_or_else(|| "M15".to_string())
+        .split(',')
+        .filter_map(|s| match s.trim().to_uppercase().as_str() {
+            "M1"  => Some(Timeframe::M1),
+            "M5"  => Some(Timeframe::M5),
+            "M15" => Some(Timeframe::M15),
+            "H1"  => Some(Timeframe::H1),
+            "H4"  => Some(Timeframe::H4),
+            "D1"  => Some(Timeframe::D1),
+            other => { eprintln!("Unknown timeframe: {other}"); None }
+        })
+        .collect();
+
+    let db_path = arg_value(args, "--db").unwrap_or_else(default_db_path);
+    let mut db = match Database::open(&db_path) {
+        Ok(db) => db,
+        Err(err) => { eprintln!("Failed to open database {db_path}: {err}"); return; }
+    };
+
+    let mut config = FetchConfig::new(&symbol, from, to);
+    config.timeframes = timeframes;
+    if let Some(delay) = arg_value(args, "--delay").and_then(|s| s.parse::<u64>().ok()) {
+        config.request_delay_ms = delay;
+    }
+
+    println!("Streaming {} from {} to {} → {}", symbol, from, to, db_path);
+    println!("Timeframes: {:?}", config.timeframes);
+    println!("(no files written to disk)");
+    println!();
+
+    match stream_and_insert(db.conn_mut(), &config) {
+        Ok(report) => {
+            println!("Done.");
+            println!("  Days fetched:   {}", report.days_fetched);
+            println!("  Hours fetched:  {}", report.hours_fetched);
+            println!("  Ticks parsed:   {}", report.ticks_parsed);
+            println!("  Bars inserted:  {}", report.bars_inserted);
+        }
+        Err(err) => eprintln!("Fetch failed: {err}"),
+    }
 }
 
 fn cmd_import(args: &[String]) {

@@ -9,4 +9,4 @@ pub mod theme;
 pub mod ui;
 
 pub use config::GadarahConfig;
-pub use state::{AppState, LogEntry, LogLevel, Position, SharedState};
+pub use state::{AppState, LogEntry, LogLevel, Position, PriceBar, SharedState, TradeMarker, TradeMarkerKind};

@@ -1,4 +1,5 @@
 //! GADARAH GUI — Main application entry point
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -8,11 +9,9 @@ use egui::RichText;
 
 use gadarah_gui::{
     config::GadarahConfig,
-    state::{
-        AppState, ConnectionStatus, EquityPoint, LogLevel, Position, SharedState, TradeRecord,
-    },
+    state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
-    ui::{BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, PerformancePanel},
+    ui::{BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, PayoutPanel, PerformancePanel, PriceChartPanel},
 };
 
 struct GadarahApp {
@@ -21,6 +20,7 @@ struct GadarahApp {
     backtest_panel: BacktestPanel,
     config_panel: ConfigPanel,
     performance_panel: PerformancePanel,
+    payout_panel: PayoutPanel,
 }
 
 impl GadarahApp {
@@ -32,13 +32,13 @@ impl GadarahApp {
             backtest_panel: BacktestPanel::new(),
             config_panel: ConfigPanel::new(),
             performance_panel: PerformancePanel::default(),
+            payout_panel: PayoutPanel::default(),
         };
         app.initialize_demo_data();
         app
     }
 
     fn initialize_demo_data(&mut self) {
-        use rust_decimal_macros::dec;
         let mut state = self.state.lock().unwrap();
 
         let config_path = PathBuf::from("config/gadarah.toml");
@@ -58,135 +58,9 @@ impl GadarahApp {
             state.available_firms.sort();
         }
 
-        state.balance          = dec!(10000);
-        state.equity           = dec!(10500);
-        state.free_margin      = dec!(9500);
-        state.daily_pnl        = dec!(500);
-        state.daily_pnl_pct    = dec!(5);
-        state.total_pnl        = dec!(500);
-        state.total_pnl_pct    = dec!(5);
-        state.starting_balance = dec!(10000);
-
-        use gadarah_core::{Direction, Regime9};
-        state.positions = vec![
-            Position {
-                id: 1,
-                symbol: "EURUSD".to_string(),
-                direction: Direction::Buy,
-                lots: dec!(0.10),
-                entry_price: dec!(1.0850),
-                current_price: dec!(1.0865),
-                unrealized_pnl: dec!(15),
-                stop_loss: Some(dec!(1.0830)),
-                take_profit: Some(dec!(1.0900)),
-                opened_at: chrono::Utc::now().timestamp() - 3600,
-            },
-            Position {
-                id: 2,
-                symbol: "GBPUSD".to_string(),
-                direction: Direction::Sell,
-                lots: dec!(0.08),
-                entry_price: dec!(1.2650),
-                current_price: dec!(1.2635),
-                unrealized_pnl: dec!(12),
-                stop_loss: Some(dec!(1.2680)),
-                take_profit: Some(dec!(1.2600)),
-                opened_at: chrono::Utc::now().timestamp() - 1800,
-            },
-        ];
-
-        state.regime_by_symbol.insert(
-            "EURUSD".to_string(),
-            gadarah_core::RegimeSignal9 {
-                regime: Regime9::StrongTrendUp,
-                confidence: dec!(0.80),
-                adx: dec!(28.5),
-                hurst: dec!(0.65),
-                atr_ratio: dec!(0.7),
-                bb_width_pctile: dec!(0.45),
-                choppiness_index: dec!(42),
-                computed_at: chrono::Utc::now().timestamp(),
-            },
-        );
-        state.regime_by_symbol.insert(
-            "GBPUSD".to_string(),
-            gadarah_core::RegimeSignal9 {
-                regime: Regime9::WeakTrendUp,
-                confidence: dec!(0.55),
-                adx: dec!(22),
-                hurst: dec!(0.52),
-                atr_ratio: dec!(0.6),
-                bb_width_pctile: dec!(0.38),
-                choppiness_index: dec!(48),
-                computed_at: chrono::Utc::now().timestamp(),
-            },
-        );
-
-        state.active_heads = vec![
-            gadarah_core::HeadId::Momentum,
-            gadarah_core::HeadId::Breakout,
-            gadarah_core::HeadId::Trend,
-        ];
-
-        // Demo equity curve (60 bars)
-        let base_time = chrono::Utc::now().timestamp() - 86400 * 30;
-        let mut running = dec!(10000);
-        for i in 0..60i64 {
-            let delta = rust_decimal::Decimal::from(rand::random::<i8>() as i32 * 15);
-            running += delta;
-            state.equity_curve.push(EquityPoint {
-                timestamp: base_time + i * 86400,
-                equity: running,
-                balance: dec!(10000) + rust_decimal::Decimal::from(i * 8),
-            });
-        }
-
-        // Demo trade history
-        state.trade_history = vec![
-            TradeRecord {
-                id: 1,
-                timestamp: chrono::Utc::now().timestamp() - 86400,
-                symbol: "EURUSD".to_string(),
-                head: gadarah_core::HeadId::Momentum,
-                direction: Direction::Buy,
-                entry_price: dec!(1.0800),
-                exit_price: dec!(1.0850),
-                lots: dec!(0.10),
-                pnl: dec!(50),
-                r_multiple: dec!(1.5),
-                close_reason: "Take Profit".to_string(),
-            },
-            TradeRecord {
-                id: 2,
-                timestamp: chrono::Utc::now().timestamp() - 86400 * 2,
-                symbol: "GBPUSD".to_string(),
-                head: gadarah_core::HeadId::Breakout,
-                direction: Direction::Sell,
-                entry_price: dec!(1.2700),
-                exit_price: dec!(1.2650),
-                lots: dec!(0.08),
-                pnl: dec!(40),
-                r_multiple: dec!(1.2),
-                close_reason: "Take Profit".to_string(),
-            },
-            TradeRecord {
-                id: 3,
-                timestamp: chrono::Utc::now().timestamp() - 86400 * 3,
-                symbol: "EURUSD".to_string(),
-                head: gadarah_core::HeadId::ScalpM5,
-                direction: Direction::Buy,
-                entry_price: dec!(1.0820),
-                exit_price: dec!(1.0810),
-                lots: dec!(0.05),
-                pnl: dec!(-5),
-                r_multiple: dec!(-0.5),
-                close_reason: "Stop Loss".to_string(),
-            },
-        ];
-
-        state.add_log(LogLevel::Info, "GADARAH started — bot is ready");
-        state.add_log(LogLevel::Info, "Go to the Config tab to connect your broker account");
-        state.update_stats();
+        state.add_log(LogLevel::Info, "GADARAH started — waiting for broker connection");
+        state.add_log(LogLevel::Info, "Use --state-file <path> to bridge live data from the CLI");
+        state.add_log(LogLevel::Info, "Go to the Config tab to configure your trading parameters");
     }
 }
 
@@ -292,8 +166,10 @@ impl eframe::App for GadarahApp {
                         ui.horizontal_centered(|ui| {
                             let tabs = [
                                 "Dashboard",
+                                "Chart",
                                 "Performance",
                                 "Backtest",
+                                "Payout",
                                 "Config",
                                 "Logs",
                             ];
@@ -333,10 +209,12 @@ impl eframe::App for GadarahApp {
                                 let state = self.state.clone();
                                 match self.selected_tab {
                                     0 => DashboardPanel::show(ui, &state),
-                                    1 => self.performance_panel.show(ui, &state),
-                                    2 => self.backtest_panel.show(ui, &state),
-                                    3 => self.config_panel.show(ui, &state),
-                                    4 => LogsPanel::show(ui, &state),
+                                    1 => PriceChartPanel::show(ui, &state),
+                                    2 => self.performance_panel.show(ui, &state),
+                                    3 => self.backtest_panel.show(ui, &state),
+                                    4 => self.payout_panel.show(ui, &state),
+                                    5 => self.config_panel.show(ui, &state),
+                                    6 => LogsPanel::show(ui, &state),
                                     _ => {}
                                 }
                             });
@@ -431,6 +309,42 @@ fn apply_state_snapshot(s: &mut SharedState, v: &serde_json::Value) {
                 stop_loss: Some(dec_field("sl")),
                 take_profit: Some(dec_field("tp")),
                 opened_at: p["opened_at"].as_i64().unwrap_or(0),
+            });
+        }
+    }
+
+    // Update chart symbol
+    if let Some(sym) = v["symbol"].as_str() {
+        s.chart_symbol = sym.to_string();
+    }
+
+    // Update price bars for the chart
+    if let Some(bars) = v["price_bars"].as_array() {
+        s.price_bars.clear();
+        for b in bars {
+            s.price_bars.push(gadarah_gui::state::PriceBar {
+                timestamp: b["timestamp"].as_i64().unwrap_or(0),
+                open: b["open"].as_f64().unwrap_or(0.0),
+                high: b["high"].as_f64().unwrap_or(0.0),
+                low: b["low"].as_f64().unwrap_or(0.0),
+                close: b["close"].as_f64().unwrap_or(0.0),
+                volume: b["volume"].as_u64().unwrap_or(0),
+            });
+        }
+    }
+
+    // Update equity curve
+    if let Some(eq_arr) = v["equity_curve"].as_array() {
+        s.equity_curve.clear();
+        for e in eq_arr {
+            let eq = e["equity"]
+                .as_str()
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+            s.equity_curve.push(gadarah_gui::state::EquityPoint {
+                timestamp: e["timestamp"].as_i64().unwrap_or(0),
+                equity: eq,
+                balance: s.balance,
             });
         }
     }

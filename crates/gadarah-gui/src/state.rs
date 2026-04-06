@@ -16,6 +16,36 @@ const MAX_LOG_ENTRIES: usize = 1000;
 /// Maximum number of equity curve points to keep
 const MAX_EQUITY_POINTS: usize = 5000;
 
+/// Maximum number of price bars to keep for the chart
+const MAX_PRICE_BARS: usize = 500;
+
+/// OHLC price bar for the chart display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceBar {
+    pub timestamp: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: u64,
+}
+
+/// Trade marker to overlay on the price chart
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeMarker {
+    pub timestamp: i64,
+    pub price: f64,
+    pub direction: Direction,
+    pub kind: TradeMarkerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TradeMarkerKind {
+    Entry,
+    TakeProfit,
+    StopLoss,
+}
+
 /// Active trading position
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
@@ -155,7 +185,12 @@ pub struct SharedState {
     // Performance history
     pub equity_curve: Vec<EquityPoint>,
     pub trade_history: Vec<TradeRecord>,
-    
+
+    // Price chart
+    pub price_bars: Vec<PriceBar>,
+    pub chart_symbol: String,
+    pub trade_markers: Vec<TradeMarker>,
+
     // Stats
     pub total_trades: u32,
     pub win_rate: Decimal,
@@ -193,6 +228,9 @@ impl Default for SharedState {
             backtest_running: false,
             equity_curve: Vec::new(),
             trade_history: Vec::new(),
+            price_bars: Vec::new(),
+            chart_symbol: String::new(),
+            trade_markers: Vec::new(),
             total_trades: 0,
             win_rate: Decimal::ZERO,
             profit_factor: Decimal::ZERO,
@@ -237,6 +275,14 @@ impl SharedState {
         }
     }
     
+    /// Add a price bar, keeping the buffer bounded
+    pub fn add_price_bar(&mut self, bar: PriceBar) {
+        self.price_bars.push(bar);
+        while self.price_bars.len() > MAX_PRICE_BARS {
+            self.price_bars.remove(0);
+        }
+    }
+
     /// Update stats from trade history
     pub fn update_stats(&mut self) {
         if self.trade_history.is_empty() {

@@ -1,4 +1,5 @@
 pub mod aggregator;
+pub mod dukascopy;
 pub mod audit;
 pub mod csv_import;
 pub mod dataset;
@@ -26,6 +27,7 @@ pub use db::Database;
 pub use gap_filler::{detect_gaps, fill_gaps, GapFillReport, GapRange};
 pub use volume_processor::{process_volumes, VolumeProcessStats};
 pub use downloader::{quick_download, DataDownloader, DataSource, DownloadConfig};
+pub use dukascopy::{point_factor, stream_and_insert, FetchConfig, FetchReport};
 pub use error::DataError;
 pub use store::{
     bar_time_range, count_bars, delete_bars, insert_bar, insert_bars, list_symbols,

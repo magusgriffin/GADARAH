@@ -5,7 +5,7 @@ use rust_decimal_macros::dec;
 
 use eframe::egui;
 use egui::RichText;
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{Bar, BarChart, Line, Plot, PlotPoints};
 
 use crate::state::{AppState, TradeRecord};
 use crate::theme;
@@ -30,36 +30,43 @@ impl PerformancePanel {
         ui.add_space(12.0);
 
         // ── Stats cards ───────────────────────────────────────────────────────
-        let card_w = (ui.available_width() - 60.0) / 6.0;
-        ui.horizontal(|ui| {
-            let stats = [
-                ("Trades",        format!("{}", g.total_trades),            theme::TEXT),
-                ("Win Rate",      format!("{:.1}%", g.win_rate),
-                    if g.win_rate >= dec!(50) { theme::GREEN } else { theme::RED }),
-                ("Profit Factor", format!("{:.2}", g.profit_factor),
-                    if g.profit_factor >= dec!(1.5) { theme::GREEN }
-                    else if g.profit_factor >= Decimal::ONE { theme::YELLOW }
-                    else { theme::RED }),
-                ("Max Drawdown",  format!("{:.2}%", g.max_drawdown_pct),
-                    if g.max_drawdown_pct <= dec!(5) { theme::GREEN }
-                    else if g.max_drawdown_pct <= dec!(10) { theme::YELLOW }
-                    else { theme::RED }),
-                ("Sharpe Ratio",  format!("{:.2}", g.sharpe_ratio),
-                    if g.sharpe_ratio >= dec!(1) { theme::GREEN }
-                    else if g.sharpe_ratio >= dec!(0.5) { theme::YELLOW }
-                    else { theme::RED }),
-                ("Expectancy",    format!("{:.2}R", g.expectancy_r),
-                    if g.expectancy_r >= Decimal::ZERO { theme::GREEN } else { theme::RED }),
-            ];
+        let has_trades = g.total_trades > 0;
+        let card_w = (ui.available_width() - 50.0) / 6.0;
+        ui.horizontal_wrapped(|ui| {
+            let stats: Vec<(&str, String, egui::Color32)> = if has_trades {
+                vec![
+                    ("Trades",        format!("{}", g.total_trades),            theme::TEXT),
+                    ("Win Rate",      format!("{:.1}%", g.win_rate),
+                        if g.win_rate >= dec!(50) { theme::GREEN } else { theme::RED }),
+                    ("Profit Factor", format!("{:.2}", g.profit_factor),
+                        if g.profit_factor >= dec!(1.5) { theme::GREEN }
+                        else if g.profit_factor >= Decimal::ONE { theme::YELLOW }
+                        else { theme::RED }),
+                    ("Max DD",        format!("{:.2}%", g.max_drawdown_pct),
+                        if g.max_drawdown_pct <= dec!(5) { theme::GREEN }
+                        else if g.max_drawdown_pct <= dec!(10) { theme::YELLOW }
+                        else { theme::RED }),
+                    ("Sharpe",        format!("{:.2}", g.sharpe_ratio),
+                        if g.sharpe_ratio >= dec!(1) { theme::GREEN }
+                        else if g.sharpe_ratio >= dec!(0.5) { theme::YELLOW }
+                        else { theme::RED }),
+                    ("Expect.",       format!("{:.2}R", g.expectancy_r),
+                        if g.expectancy_r >= Decimal::ZERO { theme::GREEN } else { theme::RED }),
+                ]
+            } else {
+                vec![
+                    ("Trades",   "0".to_string(),  theme::MUTED),
+                    ("Win Rate", "--".to_string(),  theme::MUTED),
+                    ("PF",       "--".to_string(),  theme::MUTED),
+                    ("Max DD",   "--".to_string(),  theme::MUTED),
+                    ("Sharpe",   "--".to_string(),  theme::MUTED),
+                    ("Expect.",  "--".to_string(),  theme::MUTED),
+                ]
+            };
 
             for (label, value, color) in &stats {
-                theme::card_sm().show(ui, |ui| {
-                    ui.set_width(card_w);
-                    theme::section_label(ui, label);
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(value).size(20.0).color(*color).strong().monospace());
-                });
-                ui.add_space(10.0);
+                theme::stat_card(ui, label, value, *color, card_w);
+                ui.add_space(6.0);
             }
         });
 
@@ -71,11 +78,7 @@ impl PerformancePanel {
             ui.add_space(8.0);
 
             if g.equity_curve.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(20.0);
-                    ui.label(RichText::new("No equity data available yet.").color(theme::MUTED));
-                    ui.add_space(20.0);
-                });
+                theme::empty_state(ui, "📈", "No Equity Data", "Equity curve will build as trades are executed.");
             } else {
                 let points: PlotPoints = g.equity_curve
                     .iter()
@@ -97,6 +100,142 @@ impl PerformancePanel {
                     });
             }
         });
+
+        ui.add_space(12.0);
+
+        // ── Daily P&L history + projection ───────────────────────────────────
+        {
+            // Build daily PnL from trade history grouped by calendar day
+            let mut daily_pnl: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+            for t in &g.trade_history {
+                let day = t.timestamp - (t.timestamp % 86400); // floor to UTC midnight
+                let pnl_f: f64 = t.pnl.to_string().parse().unwrap_or(0.0);
+                *daily_pnl.entry(day).or_default() += pnl_f;
+            }
+
+            // Also derive from equity curve if no trades yet
+            if daily_pnl.is_empty() && g.equity_curve.len() >= 2 {
+                for pair in g.equity_curve.windows(2) {
+                    let day = pair[1].timestamp - (pair[1].timestamp % 86400);
+                    let prev: f64 = pair[0].equity.to_string().parse().unwrap_or(0.0);
+                    let curr: f64 = pair[1].equity.to_string().parse().unwrap_or(0.0);
+                    *daily_pnl.entry(day).or_default() += curr - prev;
+                }
+            }
+
+            theme::card().show(ui, |ui| {
+                theme::section_label(ui, "DAILY P&L — Profit/loss per trading day + 30-day projection");
+                ui.add_space(8.0);
+
+                if daily_pnl.is_empty() {
+                    theme::empty_state(ui, "📅", "No Daily Data", "Trade history will populate this chart as the bot trades.");
+                } else {
+                    let days: Vec<(i64, f64)> = daily_pnl.into_iter().collect();
+                    let n = days.len();
+
+                    // Build bar chart for historical daily PnL
+                    let pnl_bars: Vec<Bar> = days.iter().enumerate().map(|(i, (_day, pnl))| {
+                        let color = if *pnl >= 0.0 { theme::GREEN } else { theme::RED };
+                        Bar::new(i as f64, *pnl).fill(color).width(0.7)
+                    }).collect();
+
+                    // Calculate average daily PnL for projection
+                    let total_pnl: f64 = days.iter().map(|(_, p)| p).sum();
+                    let avg_daily = total_pnl / n as f64;
+
+                    // Build 30-day projection line (dotted continuation)
+                    let mut projection_points: Vec<[f64; 2]> = Vec::new();
+                    let mut cumulative = total_pnl;
+                    // Start projection from end of actuals
+                    projection_points.push([n as f64 - 1.0, cumulative]);
+                    for d in 0..30 {
+                        cumulative += avg_daily;
+                        projection_points.push([(n + d) as f64, cumulative]);
+                    }
+
+                    // Build cumulative actual line
+                    let mut running = 0.0;
+                    let cum_points: Vec<[f64; 2]> = days.iter().enumerate().map(|(i, (_, pnl))| {
+                        running += pnl;
+                        [i as f64, running]
+                    }).collect();
+
+                    // Summary stats
+                    let winning_days = days.iter().filter(|(_, p)| *p > 0.0).count();
+                    let losing_days = days.iter().filter(|(_, p)| *p < 0.0).count();
+                    let best_day = days.iter().map(|(_, p)| *p).fold(f64::NEG_INFINITY, f64::max);
+                    let worst_day = days.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
+
+                    ui.horizontal(|ui| {
+                        for (label, value, color) in [
+                            ("Avg Daily", format!("${:.2}", avg_daily), if avg_daily >= 0.0 { theme::GREEN } else { theme::RED }),
+                            ("Best Day", format!("${:.2}", best_day), theme::GREEN),
+                            ("Worst Day", format!("${:.2}", worst_day), theme::RED),
+                            ("Win Days", format!("{}/{}", winning_days, n), if winning_days > losing_days { theme::GREEN } else { theme::RED }),
+                            ("30d Projection", format!("${:.0}", avg_daily * 30.0), if avg_daily >= 0.0 { theme::ACCENT } else { theme::RED }),
+                        ] {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(label).size(10.5).color(theme::MUTED).strong());
+                                ui.label(RichText::new(value).size(13.0).color(color).monospace().strong());
+                            });
+                            ui.add_space(16.0);
+                        }
+                    });
+                    ui.add_space(8.0);
+
+                    // Daily PnL bar chart
+                    Plot::new("daily_pnl_bars")
+                        .height(180.0)
+                        .show_axes([true, true])
+                        .y_axis_label("Daily P&L ($)")
+                        .label_formatter(move |_name, value| {
+                            format!("Day {:.0}: ${:.2}", value.x + 1.0, value.y)
+                        })
+                        .show(ui, |plot_ui| {
+                            plot_ui.bar_chart(BarChart::new(pnl_bars).name("Daily P&L"));
+                            // Zero line
+                            plot_ui.hline(
+                                egui_plot::HLine::new(0.0)
+                                    .color(theme::DIM)
+                                    .width(1.0),
+                            );
+                        });
+
+                    ui.add_space(10.0);
+                    theme::section_label(ui, "CUMULATIVE P&L + 30-DAY PROJECTION");
+                    ui.add_space(4.0);
+
+                    // Cumulative line + projection
+                    Plot::new("daily_pnl_cumulative")
+                        .height(160.0)
+                        .show_axes([true, true])
+                        .y_axis_label("Cumulative ($)")
+                        .label_formatter(move |_name, value| {
+                            format!("Day {:.0}: ${:.2}", value.x + 1.0, value.y)
+                        })
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(
+                                Line::new(PlotPoints::new(cum_points))
+                                    .name("Actual")
+                                    .color(theme::ACCENT)
+                                    .width(2.0),
+                            );
+                            plot_ui.line(
+                                Line::new(PlotPoints::new(projection_points))
+                                    .name("30-day Projection")
+                                    .color(theme::YELLOW)
+                                    .width(1.5)
+                                    .style(egui_plot::LineStyle::dashed_dense()),
+                            );
+                            plot_ui.hline(
+                                egui_plot::HLine::new(0.0)
+                                    .color(theme::DIM)
+                                    .width(1.0),
+                            );
+                        });
+                }
+            });
+        }
 
         ui.add_space(12.0);
 
@@ -154,7 +293,7 @@ impl PerformancePanel {
                 .collect();
 
             if filtered.is_empty() {
-                ui.label(RichText::new("No trades match the current filter.").color(theme::MUTED).size(12.5));
+                theme::empty_state(ui, "🔍", "No Matching Trades", "Try adjusting the strategy or market filter above.");
                 return;
             }
 

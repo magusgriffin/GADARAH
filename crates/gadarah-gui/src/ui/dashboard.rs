@@ -72,6 +72,14 @@ impl DashboardPanel {
             ui.add_space(12.0);
         }
 
+        // ── Firm header ─────────────────────────────────────────────────────
+        if let Some(firm) = &selected_firm {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(firm).size(14.0).color(theme::MUTED).strong());
+            });
+            ui.add_space(4.0);
+        }
+
         // ── Row 1: Account + P&L + Risk cards ────────────────────────────────
         let card_width = (ui.available_width() - 24.0) / 3.0;
 
@@ -121,7 +129,7 @@ impl DashboardPanel {
             // Risk gauges card
             theme::card().show(ui, |ui| {
                 ui.set_width(card_width);
-                theme::section_label(ui, "RISK LIMITS — HOW MUCH LOSS BUFFER IS LEFT");
+                theme::section_label(ui, "RISK LIMITS");
                 ui.add_space(6.0);
 
                 // Compute used percentages from balance
@@ -182,11 +190,7 @@ impl DashboardPanel {
                 ui.add_space(8.0);
 
                 if positions.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(RichText::new("The bot is monitoring the market — no trades open right now.").color(theme::MUTED).size(12.5));
-                        ui.add_space(16.0);
-                    });
+                    theme::empty_state(ui, "📡", "No Open Trades", "The bot is monitoring the market — trades will appear here when positions are opened.");
                 } else {
                     egui::Grid::new("pos_grid")
                         .num_columns(8)
@@ -213,7 +217,7 @@ impl DashboardPanel {
                 ui.add_space(8.0);
 
                 if regime_map.is_empty() {
-                    ui.label(RichText::new("No market data yet").color(theme::MUTED).size(12.0));
+                    theme::empty_state(ui, "📊", "No Market Data", "Waiting for price feed to classify market conditions.");
                 } else {
                     let mut entries: Vec<_> = regime_map.iter().collect();
                     entries.sort_by_key(|(k, _)| k.as_str());
@@ -230,7 +234,7 @@ impl DashboardPanel {
                 theme::section_label(ui, "ACTIVE STRATEGIES");
                 ui.add_space(4.0);
                 if active_heads.is_empty() {
-                    ui.label(RichText::new("No strategies active in current market conditions").color(theme::MUTED).size(12.0));
+                    ui.label(RichText::new("Waiting for suitable market conditions to activate strategies.").color(theme::MUTED).size(12.0));
                 } else {
                     ui.horizontal_wrapped(|ui| {
                         for head in &active_heads {
@@ -330,10 +334,10 @@ fn regime_card(ui: &mut egui::Ui, symbol: &str, regime: &RegimeSignal9) {
     let conf_pct = (regime.confidence * dec!(100)).to_string().parse::<f32>().unwrap_or(0.0);
 
     egui::Frame::new()
-        .fill(egui::Color32::from_rgb(16, 22, 30))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-        .corner_radius(6u8)
-        .inner_margin(egui::Margin::same(8))
+        .fill(egui::Color32::from_rgb(14, 20, 28))
+        .stroke(egui::Stroke::new(1.0, color.linear_multiply(0.25)))
+        .corner_radius(8u8)
+        .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(symbol).strong().size(13.5).color(theme::TEXT));

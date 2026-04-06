@@ -18,14 +18,18 @@ use gadarah_backtest::{
     EngineConfig as BacktestEngineConfig, MonteCarloConfig, StressConfig, WalkForwardConfig,
 };
 use gadarah_broker::{
-    Broker, BrokerAccountInfo, CloseRequest, CtraderClient, CtraderConfig, MockConfig, OrderRequest,
-    OrderType,
+    Broker, CloseRequest, CtraderClient, CtraderConfig, MockConfig, OrderRequest, OrderType,
 };
 use gadarah_core::{
     heads::{
         asian_range::{AsianRangeConfig, AsianRangeHead},
         breakout::{BreakoutConfig, BreakoutHead},
         momentum::{MomentumConfig, MomentumHead},
+        scalp_m1::{ScalpM1Config, ScalpM1Head},
+        scalp_m5::{ScalpM5Config, ScalpM5Head},
+        smc::{SmcConfig, SmcHead},
+        trend::{TrendConfig, TrendHead},
+        vol_profile::{VolProfileConfig, VolProfileHead},
     },
     utc_hour, Bar, Head, HeadId, Regime9, RegimeClassifier, RegimeSignal9, Session, SessionProfile,
     SignalKind, Timeframe, TradeSignal,
@@ -85,6 +89,12 @@ struct LiveRuntime {
     positions_by_head: HashMap<HeadId, LivePositionState>,
     pyramid_config: PyramidConfig,
     pyramid_enabled: bool,
+    /// Consecutive losing trade count. Reset on a win.
+    consecutive_losses: u8,
+    /// Equity at the start of the current trading day (resets when the UTC day rolls).
+    day_open_equity: Decimal,
+    /// Last observed UTC day (used to detect day rollover).
+    last_day: i64,
 }
 
 pub fn run_backtest(args: &[String]) {
@@ -131,7 +141,7 @@ pub fn run_backtest(args: &[String]) {
         };
 
         let engine_config = build_engine_config_for(&ctx, symbol, positions_per_symbol);
-        let mut heads = make_phase1_heads(symbol);
+        let mut heads = make_phase1_heads(symbol, Timeframe::M15);
 
         let result = match run_engine(&bars, &mut heads, &engine_config) {
             Ok(result) => result,
@@ -311,7 +321,7 @@ pub fn run_validate(args: &[String]) {
         };
 
         let engine_config = build_engine_config_for(&ctx, symbol, positions_per_symbol);
-        let mut heads = make_phase1_heads(symbol);
+        let mut heads = make_phase1_heads(symbol, Timeframe::M15);
         let result = match run_engine(&sym_bars, &mut heads, &engine_config) {
             Ok(r) => r,
             Err(err) => {
@@ -387,7 +397,7 @@ pub fn run_validate(args: &[String]) {
     println!("{}", "=".repeat(60));
     let walk_forward = match run_walk_forward_engine(
         wf_bars,
-        || make_phase1_heads(&ctx.symbol),
+        || make_phase1_heads(&ctx.symbol, Timeframe::M15),
         &wf_engine_config,
         &WalkForwardConfig::default(),
     ) {
@@ -546,7 +556,7 @@ pub fn run_benchmarks(args: &[String]) {
         bars.len()
     );
     let engine_config = build_engine_config(&ctx);
-    let mut heads = make_phase1_heads(&ctx.symbol);
+    let mut heads = make_phase1_heads(&ctx.symbol, Timeframe::M15);
     let result = match run_engine(&bars, &mut heads, &engine_config) {
         Ok(result) => result,
         Err(err) => {
@@ -661,7 +671,7 @@ pub fn run_live(args: &[String]) {
         return;
     }
 
-    let mut heads = make_phase1_heads(&ctx.symbol);
+    let mut heads = make_phase1_heads(&ctx.symbol, timeframe);
     let mut regime = RegimeClassifier::new();
     let warmup_slice = if history.len() > warmup_bars {
         &history[history.len() - warmup_bars..]
@@ -695,6 +705,9 @@ pub fn run_live(args: &[String]) {
         positions_by_head: HashMap::new(),
         pyramid_config: ctx.config.pyramid_config(),
         pyramid_enabled: ctx.config.pyramid.enabled,
+        consecutive_losses: 0,
+        day_open_equity: ctx.balance,
+        last_day: 0,
     };
 
     // Orphan detection: cross-check DB unclosed trades against broker open positions.
@@ -724,6 +737,8 @@ pub fn run_live(args: &[String]) {
 
     let gui_state_path = arg_value(args, "--gui-state-file");
     let mut bars_since_account_refresh: usize = 0;
+    let mut recent_bars: Vec<Bar> = warmup_slice.to_vec();
+    let mut equity_history: Vec<(i64, Decimal)> = Vec::new();
     println!("Warmup complete. Listening for closed bars...");
 
     loop {
@@ -765,6 +780,17 @@ pub fn run_live(args: &[String]) {
                         }
                     }
 
+                    recent_bars.push(bar.clone());
+                    if recent_bars.len() > 500 {
+                        recent_bars.drain(..recent_bars.len() - 500);
+                    }
+                    if let Ok(info) = client.account_info() {
+                        equity_history.push((bar.timestamp, info.equity));
+                        if equity_history.len() > 5000 {
+                            equity_history.drain(..equity_history.len() - 5000);
+                        }
+                    }
+
                     process_live_bar(
                         &ctx,
                         &mut db,
@@ -776,6 +802,8 @@ pub fn run_live(args: &[String]) {
                         execute,
                         timeframe,
                         gui_state_path.as_deref(),
+                        &recent_bars,
+                        &equity_history,
                     );
                 }
             }
@@ -797,6 +825,8 @@ fn process_live_bar(
     execute: bool,
     timeframe: Timeframe,
     gui_state_path: Option<&str>,
+    recent_bars: &[Bar],
+    equity_history: &[(i64, Decimal)],
 ) {
     let session_profile = SessionProfile::from_utc_hour(utc_hour(bar.timestamp));
     let Some(regime_signal) = regime.update(bar) else {
@@ -864,12 +894,21 @@ fn process_live_bar(
                                         warn!("Failed to persist live close: {err}");
                                     }
                                 }
+                                // Track consecutive losses for kill switch.
+                                let net_pnl = report.pnl - report.commission;
+                                if net_pnl < Decimal::ZERO {
+                                    runtime.consecutive_losses += 1;
+                                } else {
+                                    runtime.consecutive_losses = 0;
+                                }
+
                                 println!(
-                                    "[LIVE CLOSE] {:?} pos={} price={} lots={}",
+                                    "[LIVE CLOSE] {:?} pos={} price={} lots={} pnl={:.2}",
                                     signal.head,
                                     report.position_id,
                                     report.close_price,
-                                    report.closed_lots
+                                    report.closed_lots,
+                                    net_pnl,
                                 );
                             }
                             Err(err) => {
@@ -1099,28 +1138,56 @@ fn process_live_bar(
     // Phase C: Check DD-based kill switch. Notify Discord on first activation.
     if execute {
         if let Ok(info) = client.account_info() {
-            let daily_dd_pct = ctx.firm_file.firm.daily_dd_limit_pct;
-            let total_dd_pct = ctx.firm_file.firm.max_dd_limit_pct;
+            let daily_dd_limit = ctx.firm_file.firm.daily_dd_limit_pct;
+            let total_dd_limit = ctx.firm_file.firm.max_dd_limit_pct;
             let balance = ctx.balance;
+
+            // Day rollover: reset daily equity baseline at UTC midnight.
+            let current_day = bar.timestamp / 86_400;
+            if current_day != runtime.last_day {
+                runtime.day_open_equity = info.equity;
+                runtime.last_day = current_day;
+            }
+
             let total_dd_used = if balance > Decimal::ZERO {
                 (balance - info.equity) / balance * dec!(100)
             } else {
                 Decimal::ZERO
             };
-            // Trigger if within 95% of either limit.
-            let daily_trigger = daily_dd_pct * dec!(0.95);
-            let total_trigger = total_dd_pct * dec!(0.95);
-            let should_halt = total_dd_used >= total_trigger;
+            let daily_dd_used = if runtime.day_open_equity > Decimal::ZERO {
+                (runtime.day_open_equity - info.equity).max(Decimal::ZERO)
+                    / runtime.day_open_equity
+                    * dec!(100)
+            } else {
+                Decimal::ZERO
+            };
+
+            // Trigger at the configured percentage of each firm limit.
+            let trigger_frac = ctx.config.kill_switch.total_dd_trigger_pct / dec!(100);
+            let daily_trigger = daily_dd_limit * trigger_frac;
+            let total_trigger = total_dd_limit * trigger_frac;
+            let consec_limit = ctx.config.kill_switch.consecutive_loss_limit;
+            let should_halt = total_dd_used >= total_trigger
+                || daily_dd_used >= daily_trigger
+                || (consec_limit > 0 && runtime.consecutive_losses >= consec_limit);
             if should_halt && !runtime.kill_switch_active {
                 runtime.kill_switch_active = true;
+                let reason = if total_dd_used >= total_trigger {
+                    format!("total DD {:.2}% >= {:.2}%", total_dd_used, total_trigger)
+                } else if daily_dd_used >= daily_trigger {
+                    format!("daily DD {:.2}% >= {:.2}%", daily_dd_used, daily_trigger)
+                } else {
+                    format!("{} consecutive losses", runtime.consecutive_losses)
+                };
                 let msg = format!(
-                    "🚨 GADARAH KILL SWITCH: total DD {:.2}% hit {:.2}% trigger on {} {}",
-                    total_dd_used, total_trigger, ctx.symbol, ctx.firm_file.firm.name
+                    "GADARAH KILL SWITCH on {} {}: {}",
+                    ctx.symbol, ctx.firm_file.firm.name, reason
                 );
                 warn!("{}", msg);
                 crate::notify_discord(&msg);
             } else if !should_halt && runtime.kill_switch_active {
                 runtime.kill_switch_active = false;
+                runtime.consecutive_losses = 0;
             }
             if runtime.kill_switch_active {
                 warn!(
@@ -1129,7 +1196,7 @@ fn process_live_bar(
                 );
                 // Write GUI state and return early — no pyramid adds when halted.
                 if let Some(path) = gui_state_path {
-                    write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol);
+                    write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol, recent_bars, equity_history);
                 }
                 return;
             }
@@ -1195,7 +1262,7 @@ fn process_live_bar(
     // Phase G: Write GUI state snapshot file if configured.
     if let Some(path) = gui_state_path {
         if let Ok(info) = client.account_info() {
-            write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol);
+            write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol, recent_bars, equity_history);
         }
     }
 }
@@ -1206,6 +1273,8 @@ fn write_gui_state(
     runtime: &LiveRuntime,
     regime_signal: &RegimeSignal9,
     symbol: &str,
+    recent_bars: &[Bar],
+    equity_history: &[(i64, Decimal)],
 ) {
     let positions: Vec<serde_json::Value> = runtime
         .positions_by_head
@@ -1225,6 +1294,38 @@ fn write_gui_state(
         })
         .collect();
 
+    // Send last 200 bars for the price chart
+    let bars_json: Vec<serde_json::Value> = recent_bars
+        .iter()
+        .rev()
+        .take(200)
+        .rev()
+        .map(|b| {
+            serde_json::json!({
+                "timestamp": b.timestamp,
+                "open": b.open.to_string().parse::<f64>().unwrap_or(0.0),
+                "high": b.high.to_string().parse::<f64>().unwrap_or(0.0),
+                "low": b.low.to_string().parse::<f64>().unwrap_or(0.0),
+                "close": b.close.to_string().parse::<f64>().unwrap_or(0.0),
+                "volume": b.volume,
+            })
+        })
+        .collect();
+
+    // Send last 500 equity points
+    let eq_json: Vec<serde_json::Value> = equity_history
+        .iter()
+        .rev()
+        .take(500)
+        .rev()
+        .map(|(ts, eq)| {
+            serde_json::json!({
+                "timestamp": ts,
+                "equity": eq.to_string(),
+            })
+        })
+        .collect();
+
     let snapshot = serde_json::json!({
         "balance": info.balance.to_string(),
         "equity": info.equity.to_string(),
@@ -1234,6 +1335,8 @@ fn write_gui_state(
         "regime": format!("{:?}", regime_signal.regime),
         "symbol": symbol,
         "positions": positions,
+        "price_bars": bars_json,
+        "equity_curve": eq_json,
         "updated_at": chrono::Utc::now().timestamp(),
     });
 
@@ -1608,9 +1711,9 @@ fn synthetic_account_id_for(symbol: &str, firm_name: &str, label: &str) -> i64 {
     -raw.max(1)
 }
 
-fn make_phase1_heads(symbol: &str) -> Vec<Box<dyn Head>> {
+fn make_phase1_heads(symbol: &str, timeframe: Timeframe) -> Vec<Box<dyn Head>> {
     let pip_size = pip_size_for(symbol);
-    vec![
+    let mut heads: Vec<Box<dyn Head>> = vec![
         Box::new(MomentumHead::new(MomentumConfig {
             symbol: symbol.to_string(),
             pip_size,
@@ -1639,7 +1742,35 @@ fn make_phase1_heads(symbol: &str) -> Vec<Box<dyn Head>> {
             fakeout_bars: 2,
             ..BreakoutConfig::default()
         })),
-    ]
+        Box::new(TrendHead::new(TrendConfig {
+            symbol: symbol.to_string(),
+            ..TrendConfig::default()
+        })),
+        Box::new(SmcHead::new(SmcConfig {
+            symbol: symbol.to_string(),
+            ..SmcConfig::default()
+        })),
+        Box::new(VolProfileHead::new(VolProfileConfig {
+            symbol: symbol.to_string(),
+            ..VolProfileConfig::default()
+        })),
+    ];
+
+    // Scalp heads are only useful on their native timeframe.
+    if timeframe == Timeframe::M1 {
+        heads.push(Box::new(ScalpM1Head::new(ScalpM1Config {
+            symbol: symbol.to_string(),
+            ..ScalpM1Config::default()
+        })));
+    }
+    if timeframe == Timeframe::M5 || timeframe == Timeframe::M1 {
+        heads.push(Box::new(ScalpM5Head::new(ScalpM5Config {
+            symbol: symbol.to_string(),
+            ..ScalpM5Config::default()
+        })));
+    }
+
+    heads
 }
 
 fn build_ctrader_client(ctx: &Phase1Context, live_server: bool) -> Result<CtraderClient, String> {

@@ -74,11 +74,7 @@ impl LogsPanel {
                 .max_height(ui.available_height() - 20.0)
                 .show(ui, |ui| {
                     if logs.is_empty() {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(20.0);
-                            ui.label(RichText::new("No log entries at this level.").color(theme::MUTED).size(13.0));
-                            ui.add_space(20.0);
-                        });
+                        theme::empty_state(ui, "📋", "No Log Entries", "No events at this filter level. Try selecting a lower severity.");
                     } else {
                         for (i, entry) in logs.iter().rev().enumerate() {
                             Self::log_row(ui, entry, i % 2 == 0);
