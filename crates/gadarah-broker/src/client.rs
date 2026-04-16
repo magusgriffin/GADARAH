@@ -59,6 +59,7 @@ const PT_SPOT_EVENT: u32 = 2131;
 const PT_AMEND_SLTP_REQ: u32 = 2110;
 const PT_CLOSE_POSITION_REQ: u32 = 2111;
 const PT_ERROR_RES: u32 = 2142;
+const PT_GET_ACCOUNTS_REQ: u32 = 2149;
 
 // cTrader price scaling: prices are integers in 1/100000 units
 const PRICE_SCALE: u64 = 100_000;
@@ -586,6 +587,78 @@ async fn connect_and_auth(
     Ok(())
 }
 
+/// Connect with app-auth only (no account auth, no symbols, no spots).
+/// Used for account listing during the OAuth flow.
+async fn connect_app_only(
+    inner: Arc<CtraderInner>,
+    config: CtraderConfig,
+) -> Result<(), BrokerError> {
+    let host = config.host();
+    info!("Connecting to cTrader {} for account listing", host);
+
+    let tcp = TcpStream::connect((host, CTRADER_PORT))
+        .await
+        .map_err(|e| BrokerError::Connection(format!("TCP connect failed: {e}")))?;
+
+    let tls_config = build_tls_config();
+    let connector = TlsConnector::from(tls_config);
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| BrokerError::Connection(format!("Invalid host: {host}")))?;
+    let tls_stream = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| BrokerError::Connection(format!("TLS handshake failed: {e}")))?;
+
+    let (read_half, write_half) = tokio::io::split(tls_stream);
+
+    let (write_tx, write_rx) = mpsc::unbounded_channel::<prost::bytes::Bytes>();
+    {
+        *inner.write_tx.lock().unwrap() = Some(write_tx);
+    }
+    tokio::spawn(writer_task(write_half, write_rx));
+    tokio::spawn(reader_task(read_half, Arc::clone(&inner)));
+    inner.connected.store(true, Ordering::Release);
+    tokio::spawn(heartbeat_task(Arc::clone(&inner)));
+
+    // App auth only
+    let app_auth = ProtoOaApplicationAuthReq {
+        payload_type: None,
+        client_id: config.client_id.clone(),
+        client_secret: config.client_secret.clone(),
+    };
+    let _: ProtoOaApplicationAuthRes =
+        request(&inner, PT_APP_AUTH_REQ, &app_auth, "application auth").await?;
+    info!("Application authenticated (account listing mode)");
+
+    Ok(())
+}
+
+/// Query account list by access token (requires app-auth connection).
+async fn do_list_accounts(
+    inner: Arc<CtraderInner>,
+    access_token: &str,
+) -> Result<Vec<crate::auth::TradingAccount>, BrokerError> {
+    let req = ProtoOaGetAccountListByAccessTokenReq {
+        payload_type: None,
+        access_token: access_token.to_string(),
+    };
+    let res: ProtoOaGetAccountListByAccessTokenRes =
+        request(&inner, PT_GET_ACCOUNTS_REQ, &req, "get account list").await?;
+
+    let accounts = res
+        .ctid_trader_account
+        .iter()
+        .map(|a| crate::auth::TradingAccount {
+            ctid_trader_account_id: a.ctid_trader_account_id,
+            is_live: a.is_live.unwrap_or(false),
+            trader_login: a.trader_login,
+            broker_name: a.broker_title_short.clone(),
+        })
+        .collect();
+
+    Ok(accounts)
+}
+
 /// Reconcile open positions and orders after a crash or restart.
 async fn do_reconcile(inner: Arc<CtraderInner>) -> Result<ReconcileResult, BrokerError> {
     let ctid = inner
@@ -655,10 +728,73 @@ impl CtraderClient {
         self.rt.block_on(connect_and_auth(inner, config))
     }
 
+    /// Tear down the current connection state so a fresh `connect_blocking`
+    /// can establish a new TLS session.  Safe to call when already disconnected.
+    fn reset_inner(&mut self) {
+        self.inner.connected.store(false, Ordering::Release);
+        self.inner.authenticated.store(false, Ordering::Release);
+        // Drop the writer channel so the writer task exits.
+        *self.inner.write_tx.lock().unwrap() = None;
+        // Fail any in-flight requests.
+        {
+            let mut pending = self.inner.pending.lock().unwrap();
+            for (_, tx) in pending.drain() {
+                let _ = tx.send(Err(BrokerError::Connection("Reset for reconnect".into())));
+            }
+        }
+        // Replace inner so background tasks (reader/heartbeat) that hold the
+        // old Arc can drain without interfering with the new session.
+        self.inner = CtraderInner::new();
+    }
+
+    /// Reconnect with exponential backoff.  Returns `Ok(())` once reconnected
+    /// and re-authenticated, or `Err` if `max_attempts` is exhausted.
+    pub fn reconnect_blocking(&mut self, max_attempts: u32) -> Result<(), BrokerError> {
+        let mut delay = Duration::from_secs(1);
+        let max_delay = Duration::from_secs(60);
+
+        for attempt in 1..=max_attempts {
+            warn!(
+                "Reconnect attempt {}/{} (backoff {:?})",
+                attempt, max_attempts, delay
+            );
+            self.reset_inner();
+            std::thread::sleep(delay);
+
+            match self.connect_blocking() {
+                Ok(()) => {
+                    info!("Reconnected on attempt {attempt}");
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("Reconnect attempt {attempt} failed: {e}");
+                    delay = (delay * 2).min(max_delay);
+                }
+            }
+        }
+        Err(BrokerError::Connection(format!(
+            "Failed to reconnect after {max_attempts} attempts"
+        )))
+    }
+
     /// Reconcile open positions/orders — call after a restart.
     pub fn reconcile_blocking(&mut self) -> Result<ReconcileResult, BrokerError> {
         let inner = Arc::clone(&self.inner);
         self.rt.block_on(do_reconcile(inner))
+    }
+
+    /// Connect (app-auth only) and list trading accounts for an access token.
+    /// Used during the OAuth flow — does not require account credentials.
+    pub fn list_accounts_blocking(
+        &mut self,
+        access_token: &str,
+    ) -> Result<Vec<crate::auth::TradingAccount>, BrokerError> {
+        let inner = Arc::clone(&self.inner);
+        let config = self.config.clone();
+        self.rt.block_on(async {
+            connect_app_only(Arc::clone(&inner), config).await?;
+            do_list_accounts(inner, access_token).await
+        })
     }
 
     pub fn is_connected(&self) -> bool {

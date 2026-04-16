@@ -1,0 +1,26 @@
+[Unit]
+Description=GADARAH Algorithmic Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/ilovehvn/GADARAH
+EnvironmentFile=/home/ilovehvn/GADARAH/.env.live
+ExecStart=/home/ilovehvn/GADARAH/target/release/gadarah live \
+    --firm config/firms/ftmo_2step.toml \
+    --execute \
+    --live
+Restart=on-failure
+RestartSec=30
+# Give the bot time to log shutdown before SIGKILL.
+TimeoutStopSec=10
+
+# Logging: stdout/stderr go to journald; file logs are in logs/.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gadarah
+
+[Install]
+WantedBy=default.target

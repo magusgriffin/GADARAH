@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_usd         TEXT,
     r_multiple      TEXT,
     close_reason    TEXT,
-    slippage_pips   TEXT
+    slippage_pips   TEXT,
+    broker_position_id INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_account
@@ -112,6 +113,21 @@ pub fn init_schema(conn: &Connection) -> Result<(), DataError> {
     conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(SCHEMA)?;
+    run_migrations(conn)?;
+    Ok(())
+}
+
+/// Additive migrations for columns added after the initial schema.
+fn run_migrations(conn: &Connection) -> Result<(), DataError> {
+    // Add broker_position_id to trades if missing (added for crash-recovery).
+    let has_col: bool = conn
+        .prepare("SELECT broker_position_id FROM trades LIMIT 0")
+        .is_ok();
+    if !has_col {
+        conn.execute_batch(
+            "ALTER TABLE trades ADD COLUMN broker_position_id INTEGER;",
+        )?;
+    }
     Ok(())
 }
 

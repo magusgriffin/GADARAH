@@ -26,6 +26,7 @@ struct RawTradeRecord {
     r_multiple: Option<String>,
     close_reason: Option<String>,
     slippage_pips: Option<String>,
+    broker_position_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ pub struct TradeRecord {
     pub r_multiple: Option<Decimal>,
     pub close_reason: Option<String>,
     pub slippage_pips: Option<Decimal>,
+    pub broker_position_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,8 +87,9 @@ pub fn insert_trade(conn: &Connection, t: &TradeRecord) -> Result<i64, DataError
     conn.execute(
         "INSERT INTO trades (account_id, symbol, direction, head, regime, session,
          entry_price, sl_price, tp_price, lots, risk_pct, pyramid_level, opened_at,
-         closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+         closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips,
+         broker_position_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             t.account_id,
             t.symbol,
@@ -107,6 +110,7 @@ pub fn insert_trade(conn: &Connection, t: &TradeRecord) -> Result<i64, DataError
             t.r_multiple.map(|d| d.to_string()),
             t.close_reason,
             t.slippage_pips.map(|d| d.to_string()),
+            t.broker_position_id.map(|id| id as i64),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -145,8 +149,23 @@ pub fn load_trades(conn: &Connection, account_id: i64) -> Result<Vec<TradeRecord
     let mut stmt = conn.prepare_cached(
         "SELECT id, account_id, symbol, direction, head, regime, session,
          entry_price, sl_price, tp_price, lots, risk_pct, pyramid_level,
-         opened_at, closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips
+         opened_at, closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips,
+         broker_position_id
          FROM trades WHERE account_id = ?1 ORDER BY opened_at ASC",
+    )?;
+    let rows = stmt.query_map(params![account_id], row_to_raw_trade)?;
+    let trades: Result<Vec<_>, _> = rows.collect();
+    trades?.into_iter().map(raw_to_trade).collect()
+}
+
+/// Load unclosed (open) trades for an account — used for crash recovery.
+pub fn load_unclosed_trades(conn: &Connection, account_id: i64) -> Result<Vec<TradeRecord>, DataError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, account_id, symbol, direction, head, regime, session,
+         entry_price, sl_price, tp_price, lots, risk_pct, pyramid_level,
+         opened_at, closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips,
+         broker_position_id
+         FROM trades WHERE account_id = ?1 AND closed_at IS NULL ORDER BY opened_at ASC",
     )?;
     let rows = stmt.query_map(params![account_id], row_to_raw_trade)?;
     let trades: Result<Vec<_>, _> = rows.collect();
@@ -163,7 +182,8 @@ pub fn load_closed_trades(
     let mut stmt = conn.prepare_cached(
         "SELECT id, account_id, symbol, direction, head, regime, session,
          entry_price, sl_price, tp_price, lots, risk_pct, pyramid_level,
-         opened_at, closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips
+         opened_at, closed_at, close_price, pnl_usd, r_multiple, close_reason, slippage_pips,
+         broker_position_id
          FROM trades WHERE account_id = ?1 AND closed_at IS NOT NULL
            AND closed_at >= ?2 AND closed_at <= ?3
          ORDER BY closed_at ASC",
@@ -206,6 +226,7 @@ fn row_to_raw_trade(row: &rusqlite::Row) -> rusqlite::Result<RawTradeRecord> {
         r_multiple: row.get(17)?,
         close_reason: row.get(18)?,
         slippage_pips: row.get(19)?,
+        broker_position_id: row.get(20)?,
     })
 }
 
@@ -231,6 +252,7 @@ fn raw_to_trade(raw: RawTradeRecord) -> Result<TradeRecord, DataError> {
         r_multiple: parse_opt_dec("trades.r_multiple", raw.r_multiple)?,
         close_reason: raw.close_reason,
         slippage_pips: parse_opt_dec("trades.slippage_pips", raw.slippage_pips)?,
+        broker_position_id: raw.broker_position_id.map(|id| id as u64),
     })
 }
 
@@ -349,6 +371,7 @@ mod tests {
             r_multiple: None,
             close_reason: None,
             slippage_pips: None,
+            broker_position_id: None,
         }
     }
 

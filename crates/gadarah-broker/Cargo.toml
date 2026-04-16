@@ -23,6 +23,7 @@ tungstenite = { workspace = true }
 rustls = { workspace = true }
 rand = { workspace = true }
 webpki-roots = { workspace = true }
+ureq = { version = "2", features = ["json"] }
 
 [build-dependencies]
 prost-build = { workspace = true }

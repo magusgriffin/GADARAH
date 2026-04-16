@@ -35,5 +35,6 @@ pub use store::{
 };
 pub use trades::{
     close_trade, insert_equity_snapshot, insert_trade, load_closed_trades, load_equity_snapshots,
-    load_trades, load_unclosed_trade_count, EquitySnapshot, TradeClose, TradeRecord,
+    load_trades, load_unclosed_trade_count, load_unclosed_trades, EquitySnapshot, TradeClose,
+    TradeRecord,
 };

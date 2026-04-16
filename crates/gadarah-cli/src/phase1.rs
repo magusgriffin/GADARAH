@@ -2,6 +2,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use std::io::Write as IoWrite;
@@ -9,7 +11,7 @@ use std::io::Write as IoWrite;
 use rusqlite::params;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use serde_json;
 
 use gadarah_backtest::{
@@ -36,8 +38,8 @@ use gadarah_core::{
 };
 use gadarah_data::{
     audit_bars, build_dataset_readiness_report, close_trade, insert_equity_snapshot, insert_trade,
-    load_all_bars, load_unclosed_trade_count, DataAuditResult, Database, DatasetRequirements,
-    EquitySnapshot, TradeClose, TradeRecord,
+    load_all_bars, load_unclosed_trade_count, load_unclosed_trades, DataAuditResult, Database,
+    DatasetRequirements, EquitySnapshot, TradeClose, TradeRecord,
 };
 use gadarah_feed::{BarStreamer, Tick as FeedTick};
 use gadarah_risk::{
@@ -586,6 +588,166 @@ pub fn run_benchmarks(args: &[String]) {
     println!("{}", "=".repeat(60));
 }
 
+/// Recover open positions from the database after a crash/restart.
+/// Matches DB trades (with broker_position_id) against broker's open positions
+/// and re-populates `positions_by_head`.
+fn recover_positions(
+    db: &Database,
+    account_id: i64,
+    broker_open_ids: &[u64],
+    symbol: &str,
+) -> HashMap<HeadId, LivePositionState> {
+    let mut recovered = HashMap::new();
+    let unclosed = match load_unclosed_trades(db.conn(), account_id) {
+        Ok(trades) => trades,
+        Err(err) => {
+            warn!("Position recovery: failed to load unclosed trades: {err}");
+            return recovered;
+        }
+    };
+
+    for trade in unclosed {
+        let Some(broker_pos_id) = trade.broker_position_id else {
+            continue; // Legacy trade without broker ID — can't match
+        };
+        if !broker_open_ids.contains(&broker_pos_id) {
+            continue; // Broker closed this position (SL/TP hit while we were down)
+        }
+        let head_id = match parse_head_id(&trade.head) {
+            Some(h) => h,
+            None => {
+                warn!("Position recovery: unknown head '{}', skipping", trade.head);
+                continue;
+            }
+        };
+        let direction = if trade.direction == "Buy" {
+            gadarah_core::Direction::Buy
+        } else {
+            gadarah_core::Direction::Sell
+        };
+
+        let signal = TradeSignal {
+            head: head_id,
+            kind: SignalKind::Open,
+            symbol: trade.symbol.clone(),
+            direction,
+            entry: trade.entry_price,
+            stop_loss: trade.sl_price,
+            take_profit: trade.tp_price,
+            take_profit2: None,
+            head_confidence: dec!(1.0),
+            regime: Regime9::Transitioning,
+            session: Session::London,
+            pyramid_level: trade.pyramid_level as u8,
+            comment: String::new(),
+            generated_at: trade.opened_at,
+        };
+
+        let state = LivePositionState {
+            position_id: broker_pos_id,
+            trade_id: trade.id,
+            signal,
+            lots: trade.lots,
+            risk_pct: trade.risk_pct,
+            opened_at: trade.opened_at,
+            pyramid: None,
+        };
+
+        info!(
+            "Recovered position: {:?} {} pos={} lots={}",
+            head_id, symbol, broker_pos_id, trade.lots
+        );
+        recovered.insert(head_id, state);
+    }
+
+    recovered
+}
+
+fn parse_head_id(s: &str) -> Option<HeadId> {
+    match s {
+        "Momentum" => Some(HeadId::Momentum),
+        "AsianRange" => Some(HeadId::AsianRange),
+        "Breakout" => Some(HeadId::Breakout),
+        "Trend" => Some(HeadId::Trend),
+        "Grid" => Some(HeadId::Grid),
+        "Smc" => Some(HeadId::Smc),
+        "News" => Some(HeadId::News),
+        "ScalpM1" => Some(HeadId::ScalpM1),
+        "ScalpM5" => Some(HeadId::ScalpM5),
+        "VolProfile" => Some(HeadId::VolProfile),
+        _ => None,
+    }
+}
+
+pub fn run_connect_test(args: &[String]) {
+    let ctx = match load_context(args) {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
+        }
+    };
+
+    let live_server = has_flag(args, "--live");
+
+    println!("{}", "=".repeat(60));
+    println!("cTrader API CONNECTION TEST");
+    println!("{}", "=".repeat(60));
+    println!(
+        "Firm:   {}",
+        ctx.firm_file.firm.name
+    );
+    println!(
+        "Server: {}",
+        if live_server { "LIVE" } else { "DEMO" }
+    );
+    println!();
+
+    let mut client = match build_ctrader_client(&ctx, live_server) {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("[FAIL] Config error: {err}");
+            return;
+        }
+    };
+    println!("[OK] Client configured");
+
+    print!("Connecting... ");
+    if let Err(err) = client.connect_blocking() {
+        eprintln!("\n[FAIL] Connection failed: {err}");
+        return;
+    }
+    println!("connected!");
+    println!("[OK] TLS connection established");
+    println!("[OK] Application authenticated");
+    println!("[OK] Account authenticated");
+    println!("[OK] Symbols loaded");
+    println!("[OK] Spot subscriptions active");
+
+    match client.account_info() {
+        Ok(info) => {
+            println!();
+            println!("Account Info:");
+            println!("  Account ID:  {}", info.account_id);
+            println!("  Balance:     {:.2}", info.balance);
+            println!("  Equity:      {:.2}", info.equity);
+            println!("  Currency:    {}", info.currency);
+        }
+        Err(err) => {
+            eprintln!("[WARN] Could not fetch account info: {err}");
+        }
+    }
+
+    if let Err(err) = client.reconcile_blocking() {
+        eprintln!("[WARN] Reconcile failed: {err}");
+    } else {
+        println!("[OK] Reconcile successful (positions synced)");
+    }
+
+    println!();
+    println!("All checks passed — API connection is GOOD");
+}
+
 pub fn run_live(args: &[String]) {
     let ctx = match load_context(args) {
         Ok(ctx) => ctx,
@@ -710,21 +872,52 @@ pub fn run_live(args: &[String]) {
         last_day: 0,
     };
 
-    // Orphan detection: cross-check DB unclosed trades against broker open positions.
+    // Position recovery: restore positions_by_head from DB + broker reconcile.
     if let Ok(reconcile) = client.reconcile_blocking() {
-        let unclosed = load_unclosed_trade_count(db.conn(), account_id)
-            .unwrap_or(0);
-        if unclosed > 0 && unclosed != reconcile.open_position_count {
-            warn!(
-                "ORPHAN DETECT: DB has {} unclosed trades but broker reports {} open positions. \
-                 Manual review may be needed.",
-                unclosed, reconcile.open_position_count
+        let unclosed = load_unclosed_trade_count(db.conn(), account_id).unwrap_or(0);
+        if unclosed > 0 || reconcile.open_position_count > 0 {
+            let recovered = recover_positions(
+                &db,
+                account_id,
+                &reconcile.open_position_ids,
+                &ctx.symbol,
             );
-            crate::notify_discord(&format!(
-                "⚠️ GADARAH orphan detect: DB has {unclosed} unclosed trades, \
-                 broker has {} open. Check positions.",
-                reconcile.open_position_count
-            ));
+            let n_recovered = recovered.len();
+            runtime.positions_by_head = recovered;
+
+            if n_recovered > 0 {
+                let msg = format!(
+                    "♻️ GADARAH recovered {} position(s) from previous session",
+                    n_recovered
+                );
+                info!("{msg}");
+                crate::notify_discord(&msg);
+            }
+
+            // Warn about orphans we couldn't match
+            let unmatched_broker =
+                reconcile.open_position_count.saturating_sub(n_recovered);
+            let unmatched_db = unclosed.saturating_sub(n_recovered);
+            if unmatched_broker > 0 || unmatched_db > 0 {
+                let msg = format!(
+                    "⚠️ GADARAH orphan detect: {} unmatched broker position(s), \
+                     {} unmatched DB trade(s). Manual review may be needed.",
+                    unmatched_broker, unmatched_db,
+                );
+                warn!("{msg}");
+                crate::notify_discord(&msg);
+            }
+        }
+    }
+
+    // ── Graceful shutdown via SIGTERM/SIGINT ────────────────────────────────
+    let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&shutdown);
+        if let Err(err) = ctrlc::set_handler(move || {
+            flag.store(true, Ordering::Release);
+        }) {
+            warn!("Failed to register signal handler: {err}");
         }
     }
 
@@ -741,9 +934,56 @@ pub fn run_live(args: &[String]) {
     let mut equity_history: Vec<(i64, Decimal)> = Vec::new();
     println!("Warmup complete. Listening for closed bars...");
 
+    // Circuit breaker state
+    let mut consecutive_tick_failures: u32 = 0;
+    const TICK_FAIL_WARN_THRESHOLD: u32 = 60;   // ~60 s at 1 s poll
+    const TICK_FAIL_EXIT_THRESHOLD: u32 = 300;   // ~5 min
+
     loop {
+        // ── Check for shutdown signal ────────────────────────────────────
+        if shutdown.load(Ordering::Acquire) {
+            info!("Shutdown signal received — exiting live loop");
+            let n_open = runtime.positions_by_head.len();
+            let msg = format!(
+                "🛑 GADARAH shutting down. {} open position(s) remain on broker (SL/TP in place).",
+                n_open
+            );
+            println!("{msg}");
+            crate::notify_discord(&msg);
+            break;
+        }
+
+        // ── Check broker connection, reconnect if needed ─────────────────
+        if !client.is_connected() {
+            let msg = "⚠️ GADARAH broker disconnected — attempting reconnect";
+            warn!("{msg}");
+            crate::notify_discord(msg);
+
+            match client.reconnect_blocking(10) {
+                Ok(()) => {
+                    if let Err(err) = client.reconcile_blocking() {
+                        warn!("Post-reconnect reconcile failed: {err}");
+                    }
+                    consecutive_tick_failures = 0;
+                    let msg = "✅ GADARAH reconnected successfully";
+                    info!("{msg}");
+                    crate::notify_discord(msg);
+                }
+                Err(err) => {
+                    let msg = format!(
+                        "🔴 GADARAH failed to reconnect after 10 attempts: {err}. Exiting."
+                    );
+                    error!("{msg}");
+                    crate::notify_discord(&msg);
+                    break;
+                }
+            }
+        }
+
         match client.get_tick(&ctx.symbol) {
             Ok(tick) => {
+                consecutive_tick_failures = 0;
+
                 runtime
                     .execution
                     .update_spread(tick.spread_pips(pip_size_for(&ctx.symbol)), tick.timestamp);
@@ -769,8 +1009,6 @@ pub fn run_live(args: &[String]) {
                         // Phase I: Periodic account balance refresh every 10 bars.
                         if bars_since_account_refresh >= 10 {
                             bars_since_account_refresh = 0;
-                            // account_info is called inline in process_live_bar; refreshing
-                            // here ensures the snapshot stays current even if no signals fire.
                             if let Ok(info) = client.account_info() {
                                 info!(
                                     "Account refresh: balance={} equity={} margin={}",
@@ -807,7 +1045,27 @@ pub fn run_live(args: &[String]) {
                     );
                 }
             }
-            Err(err) => warn!("Tick unavailable: {err}"),
+            Err(err) => {
+                consecutive_tick_failures += 1;
+                if consecutive_tick_failures == TICK_FAIL_WARN_THRESHOLD {
+                    let msg = format!(
+                        "⚠️ GADARAH: no tick data for ~{}s on {}",
+                        consecutive_tick_failures, ctx.symbol
+                    );
+                    warn!("{msg}");
+                    crate::notify_discord(&msg);
+                }
+                if consecutive_tick_failures >= TICK_FAIL_EXIT_THRESHOLD {
+                    let msg = format!(
+                        "🔴 GADARAH: no tick data for ~{}s — circuit breaker triggered, exiting",
+                        consecutive_tick_failures
+                    );
+                    error!("{msg}");
+                    crate::notify_discord(&msg);
+                    break;
+                }
+                warn!("Tick unavailable ({consecutive_tick_failures}): {err}");
+            }
         }
 
         thread::sleep(Duration::from_millis(poll_ms));
@@ -902,17 +1160,21 @@ fn process_live_bar(
                                     runtime.consecutive_losses = 0;
                                 }
 
-                                println!(
-                                    "[LIVE CLOSE] {:?} pos={} price={} lots={} pnl={:.2}",
+                                let close_msg = format!(
+                                    "[CLOSE] {:?} pos={} price={} lots={} pnl={:.2}",
                                     signal.head,
                                     report.position_id,
                                     report.close_price,
                                     report.closed_lots,
                                     net_pnl,
                                 );
+                                println!("{close_msg}");
+                                let emoji = if net_pnl >= Decimal::ZERO { "💰" } else { "📉" };
+                                crate::notify_discord(&format!("{emoji} {close_msg}"));
                             }
                             Err(err) => {
                                 warn!("Close failed for {:?}: {err}", signal.head);
+                                crate::notify_discord(&format!("❌ Close failed {:?}: {err}", signal.head));
                                 runtime.positions_by_head.insert(signal.head, position);
                             }
                         }
@@ -1117,16 +1379,23 @@ fn process_live_bar(
                             lots,
                             fill.fill_time,
                         );
-                        println!(
-                            "[LIVE OPEN] {:?} {:?} pos={} fill={} lots={}",
+                        let open_msg = format!(
+                            "[OPEN] {:?} {:?} pos={} fill={} lots={} sl={} tp={}",
                             signal.head,
                             signal.direction,
                             fill.position_id,
                             fill.fill_price,
-                            fill.filled_lots
+                            fill.filled_lots,
+                            signal.stop_loss,
+                            signal.take_profit,
                         );
+                        println!("{open_msg}");
+                        crate::notify_discord(&format!("📊 {open_msg}"));
                     }
-                    Err(err) => warn!("Order failed for {:?}: {err}", signal.head),
+                    Err(err) => {
+                        warn!("Order failed for {:?}: {err}", signal.head);
+                        crate::notify_discord(&format!("❌ Order failed {:?}: {err}", signal.head));
+                    }
                 }
             }
             _ => {}
@@ -1579,6 +1848,7 @@ fn persist_engine_run_for(
                 r_multiple: Some(trade.r_multiple),
                 close_reason: Some(trade.close_reason.clone()),
                 slippage_pips: Some(trade.slippage_pips),
+                broker_position_id: None,
             },
         )
         .map_err(|err| format!("Failed to persist backtest trade: {err}"))?;
@@ -1658,6 +1928,7 @@ fn persist_live_open(
             r_multiple: None,
             close_reason: None,
             slippage_pips: Some(fill.slippage_pips),
+            broker_position_id: Some(fill.position_id),
         },
     )
     .map_err(|err| format!("Failed to persist live trade: {err}"))

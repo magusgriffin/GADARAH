@@ -29,18 +29,51 @@ fn main() {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "gadarah=info".parse().unwrap()),
-        )
-        .compact()
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "gadarah=info".parse().unwrap());
+
+    // If running the `live` command, also log to a daily rotating file in logs/.
+    let args_vec: Vec<String> = std::env::args().collect();
+    let is_live = args_vec.get(1).map(|s| s.as_str()) == Some("live");
+
+    if is_live {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let _ = std::fs::create_dir_all("logs");
+        let file_appender = tracing_appender::rolling::daily("logs", "gadarah.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        // _guard must live for the duration of main — leak it intentionally so
+        // logs are flushed on exit.  The OS reclaims memory anyway.
+        std::mem::forget(_guard);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_writer(std::io::stderr),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_ansi(false)
+                    .with_writer(non_blocking),
+            )
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .compact()
+            .init();
+    }
 
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
     match cmd {
+        "auth" => cmd_auth(&args[2..]),
         "import" => cmd_import(&args[2..]),
         "bulk-import" => cmd_bulk_import(&args[2..]),
         "aggregate" => cmd_aggregate(&args[2..]),
@@ -56,6 +89,7 @@ fn main() {
         "full" => cmd_full(&args[2..]),
         "tune" => cmd_tune(&args[2..]),
         "fetch" => cmd_fetch(&args[2..]),
+        "connect-test" => phase1::run_connect_test(&args[2..]),
         "live" => phase1::run_live(&args[2..]),
         "benchmarks" => phase1::run_benchmarks(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
@@ -85,6 +119,7 @@ fn print_help() {
     println!("Usage: gadarah <command> [options]");
     println!();
     println!("Commands:");
+    println!("  auth              Log in to cTrader via browser, auto-fetch credentials");
     println!("  fetch             --symbol <sym> [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--timeframes M15,H1] [--db <path>]");
     println!("  import            <csv_file> <symbol> <timeframe> [format] [--db <path>]");
     println!("  bulk-import       <dir> [--db <path>]");
@@ -100,8 +135,123 @@ fn print_help() {
     println!("  synth             [--db <path>] [--symbol <sym>] [--bars <n> | --two-years]");
     println!("  full              Alias for validate");
     println!("  tune              [--db <path>] [--symbols <csv>] [--iterations <n>]");
+    println!("  connect-test      [phase1 options] [--live]  Test cTrader API connection");
     println!("  live              [phase1 options]");
     println!("  benchmarks        [phase1 options]");
+}
+
+fn cmd_auth(args: &[String]) {
+    use gadarah_broker::auth::{run_oauth_flow, save_credentials, SavedCredentials};
+
+    // Client ID/secret can come from env or --client-id / --client-secret flags
+    let client_id = arg_value(args, "--client-id")
+        .or_else(|| std::env::var("GADARAH_CLIENT_ID").ok())
+        .unwrap_or_else(|| {
+            eprintln!("Error: cTrader client_id required.");
+            eprintln!("  Pass --client-id <id> or set GADARAH_CLIENT_ID env var.");
+            eprintln!("  Register your app at https://connect.spotware.com/apps");
+            std::process::exit(1);
+        });
+    let client_secret = arg_value(args, "--client-secret")
+        .or_else(|| std::env::var("GADARAH_CLIENT_SECRET").ok())
+        .unwrap_or_else(|| {
+            eprintln!("Error: cTrader client_secret required.");
+            eprintln!("  Pass --client-secret <sec> or set GADARAH_CLIENT_SECRET env var.");
+            std::process::exit(1);
+        });
+
+    println!("{}", "=".repeat(60));
+    println!("GADARAH — cTrader Account Login");
+    println!("{}", "=".repeat(60));
+
+    let result = match run_oauth_flow(&client_id, &client_secret) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Auth failed: {e}");
+            return;
+        }
+    };
+
+    if result.accounts.is_empty() {
+        eprintln!("No trading accounts found for this token.");
+        eprintln!("Make sure you authorized the correct cTrader ID.");
+        return;
+    }
+
+    println!();
+    println!("Found {} trading account(s):", result.accounts.len());
+    println!("{:-<60}", "");
+    for (i, acc) in result.accounts.iter().enumerate() {
+        let env_label = if acc.is_live { "LIVE" } else { "DEMO" };
+        let login = acc
+            .trader_login
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "-".into());
+        let broker = acc.broker_name.as_deref().unwrap_or("Unknown");
+        println!(
+            "  [{}] ID: {}  Login: {}  Type: {}  Broker: {}",
+            i + 1,
+            acc.ctid_trader_account_id,
+            login,
+            env_label,
+            broker,
+        );
+    }
+    println!("{:-<60}", "");
+
+    // Auto-select if only one account, otherwise prompt
+    let selected = if result.accounts.len() == 1 {
+        println!("Auto-selecting the only account.");
+        &result.accounts[0]
+    } else {
+        println!();
+        println!("Enter account number (1-{}):", result.accounts.len());
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap_or(0);
+        let idx: usize = input.trim().parse().unwrap_or(0);
+        if idx < 1 || idx > result.accounts.len() {
+            eprintln!("Invalid selection.");
+            return;
+        }
+        &result.accounts[idx - 1]
+    };
+
+    let env_file = if selected.is_live {
+        ".env.live"
+    } else {
+        ".env.demo"
+    };
+
+    let creds = SavedCredentials {
+        client_id: client_id.clone(),
+        client_secret: client_secret.clone(),
+        access_token: result.access_token.clone(),
+        refresh_token: result.refresh_token.clone(),
+        ctid_account_id: selected.ctid_trader_account_id,
+        is_live: selected.is_live,
+    };
+
+    match save_credentials(env_file, &creds) {
+        Ok(()) => {
+            println!();
+            println!("Credentials saved to {env_file}");
+            println!();
+            println!("To use them:");
+            println!("  source {env_file} && gadarah connect-test --firm config/firms/ftmo_2step.toml{}",
+                if selected.is_live { " --live" } else { "" });
+            println!();
+            println!("Token expires in ~{}h. Refresh with:",
+                result.expires_in / 3600);
+            println!("  source {env_file} && gadarah auth --refresh");
+        }
+        Err(e) => {
+            eprintln!("Failed to save credentials: {e}");
+            // Still print them so the user can copy manually
+            println!();
+            println!("ACCESS_TOKEN={}", result.access_token);
+            println!("ACCOUNT_ID={}", selected.ctid_trader_account_id);
+        }
+    }
 }
 
 fn cmd_fetch(args: &[String]) {
