@@ -8,6 +8,7 @@ pub mod downloader;
 pub mod dukascopy;
 pub mod error;
 pub mod gap_filler;
+pub mod journal;
 pub mod schema;
 pub mod store;
 pub mod trades;
@@ -37,4 +38,5 @@ pub use trades::{
     load_trades, load_unclosed_trade_count, load_unclosed_trades, EquitySnapshot, TradeClose,
     TradeRecord,
 };
+pub use journal::{export_trades_csv, export_trades_json, journal_summary, JournalSummary};
 pub use volume_processor::{process_volumes, VolumeProcessStats};

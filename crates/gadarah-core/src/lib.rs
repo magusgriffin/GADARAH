@@ -1,5 +1,6 @@
 pub mod decimal_math;
 pub mod heads;
+pub mod htf_bias;
 pub mod indicators;
 pub mod regime;
 pub mod session;
@@ -13,6 +14,7 @@ pub use types::{
 
 pub use decimal_math::{decimal_ln, decimal_sqrt};
 
+pub use htf_bias::{HtfBias, HtfBiasFilter};
 pub use regime::RegimeClassifier;
 
 pub use heads::{

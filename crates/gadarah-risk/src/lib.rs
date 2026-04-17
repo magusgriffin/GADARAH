@@ -1,6 +1,7 @@
 pub mod account;
 pub mod compliance;
 pub mod consistency;
+pub mod correlation;
 pub mod daily_pnl;
 pub mod drift;
 pub mod equity_curve;
@@ -30,7 +31,8 @@ pub use pyramid::{
     can_add_pyramid, create_pyramid_layer, PyramidAddCandidate, PyramidConfig, PyramidLayer,
     PyramidState,
 };
-pub use sizing::{calculate_lots, SizingInputs};
+pub use correlation::{CorrelationGuard, CorrelationGuardConfig};
+pub use sizing::{calculate_lots, kelly_risk_pct, EdgeStats, SizingInputs};
 pub use temporal::{TemporalIntelligence, UrgencyProfile};
 pub use trade_manager::{OpenPosition, TradeAction, TradeManager, TradeManagerConfig};
 pub use types::{RejectReason, RiskDecision, RiskError, RiskPercent, SizingError};
