@@ -1,3 +1,7 @@
+# Research-only profile.
+# Alpha makes cTrader available to U.S. clients, but it explicitly states there
+# is currently no EA functionality for cTrader accounts. Not bot-deployable for
+# this repo's cTrader workflow.
 [firm]
 name = "Alpha Capital - Alpha One"
 challenge_type = "alpha_one"

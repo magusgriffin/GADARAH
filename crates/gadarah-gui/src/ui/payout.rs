@@ -41,9 +41,11 @@ impl PayoutPanel {
 
         theme::heading(ui, "Payout Projections");
         ui.label(
-            RichText::new("See your expected payouts based on challenge rules and projected performance.")
-                .color(theme::MUTED)
-                .size(12.5),
+            RichText::new(
+                "See your expected payouts based on challenge rules and projected performance.",
+            )
+            .color(theme::MUTED)
+            .size(12.5),
         );
         ui.add_space(12.0);
 
@@ -63,11 +65,11 @@ impl PayoutPanel {
                     };
                     let selected = (self.selected_account_size - size).abs() < 0.01;
                     let btn = ui.add(
-                        egui::Button::new(
-                            RichText::new(&label)
-                                .size(12.0)
-                                .color(if selected { theme::ACCENT } else { theme::MUTED }),
-                        )
+                        egui::Button::new(RichText::new(&label).size(12.0).color(if selected {
+                            theme::ACCENT
+                        } else {
+                            theme::MUTED
+                        }))
                         .fill(if selected {
                             egui::Color32::from_rgb(0, 40, 30)
                         } else {
@@ -82,13 +84,21 @@ impl PayoutPanel {
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Expected Monthly Return:").color(theme::TEXT).size(13.0));
+                ui.label(
+                    RichText::new("Expected Monthly Return:")
+                        .color(theme::TEXT)
+                        .size(13.0),
+                );
                 ui.add(egui::Slider::new(&mut self.monthly_return_pct, 1.0..=20.0).suffix("%"));
             });
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Projection Period:").color(theme::TEXT).size(13.0));
+                ui.label(
+                    RichText::new("Projection Period:")
+                        .color(theme::TEXT)
+                        .size(13.0),
+                );
                 ui.add(egui::Slider::new(&mut self.months_to_project, 3..=24).suffix(" months"));
             });
         });
@@ -110,8 +120,24 @@ impl PayoutPanel {
                 ui.horizontal(|ui| {
                     for (label, value, color) in [
                         ("Balance", format!("${:.2}", balance_f), theme::TEXT),
-                        ("Equity", format!("${:.2}", equity_f), if equity_f >= balance_f { theme::GREEN } else { theme::RED }),
-                        ("Total P&L", format!("${:.2} ({:+.1}%)", pnl_f, pnl_pct_f), if pnl_f >= 0.0 { theme::GREEN } else { theme::RED }),
+                        (
+                            "Equity",
+                            format!("${:.2}", equity_f),
+                            if equity_f >= balance_f {
+                                theme::GREEN
+                            } else {
+                                theme::RED
+                            },
+                        ),
+                        (
+                            "Total P&L",
+                            format!("${:.2} ({:+.1}%)", pnl_f, pnl_pct_f),
+                            if pnl_f >= 0.0 {
+                                theme::GREEN
+                            } else {
+                                theme::RED
+                            },
+                        ),
                         ("Starting", format!("${:.2}", starting_f), theme::MUTED),
                     ] {
                         theme::stat_card(ui, label, &value, color, card_w);
@@ -174,10 +200,8 @@ impl PayoutPanel {
                                 f.profit_target_pct.to_string().parse().unwrap_or(0.0);
                             let daily_dd: f64 =
                                 f.daily_dd_limit_pct.to_string().parse().unwrap_or(0.0);
-                            let max_dd: f64 =
-                                f.max_dd_limit_pct.to_string().parse().unwrap_or(0.0);
-                            let split: f64 =
-                                f.profit_split_pct.to_string().parse().unwrap_or(0.0);
+                            let max_dd: f64 = f.max_dd_limit_pct.to_string().parse().unwrap_or(0.0);
+                            let split: f64 = f.profit_split_pct.to_string().parse().unwrap_or(0.0);
 
                             // Monthly profit = account * monthly_return_pct%
                             let monthly_profit =
@@ -198,11 +222,13 @@ impl PayoutPanel {
                             };
 
                             let is_selected = selected_firm.as_deref() == Some(&f.name);
-                            let name_color = if is_selected { theme::ACCENT } else { row_color };
+                            let name_color = if is_selected {
+                                theme::ACCENT
+                            } else {
+                                row_color
+                            };
 
-                            ui.label(
-                                RichText::new(&f.name).size(12.5).color(name_color).strong(),
-                            );
+                            ui.label(RichText::new(&f.name).size(12.5).color(name_color).strong());
                             ui.label(
                                 RichText::new(&f.challenge_type)
                                     .size(12.0)
@@ -295,8 +321,7 @@ impl PayoutPanel {
             let mut cum_points = Vec::new();
 
             for month in 0..self.months_to_project {
-                let monthly_profit =
-                    self.selected_account_size * self.monthly_return_pct / 100.0;
+                let monthly_profit = self.selected_account_size * self.monthly_return_pct / 100.0;
                 let payout = monthly_profit * split_frac;
                 cumulative += payout;
 
@@ -349,18 +374,22 @@ impl PayoutPanel {
             theme::section_label(ui, "SCALING ROADMAP — Growing from challenge to funded");
             ui.add_space(8.0);
 
-            let phases = build_scaling_phases(
-                self.selected_account_size,
-                self.monthly_return_pct,
-                &firms,
-            );
+            let phases =
+                build_scaling_phases(self.selected_account_size, self.monthly_return_pct, &firms);
 
             egui::Grid::new("scaling_grid")
                 .num_columns(6)
                 .spacing([14.0, 8.0])
                 .striped(true)
                 .show(ui, |ui| {
-                    for h in ["Phase", "Account", "Monthly Profit", "Your Payout", "Time to Pass", "Cumulative Earned"] {
+                    for h in [
+                        "Phase",
+                        "Account",
+                        "Monthly Profit",
+                        "Your Payout",
+                        "Time to Pass",
+                        "Cumulative Earned",
+                    ] {
                         ui.label(RichText::new(h).color(theme::MUTED).size(11.5).strong());
                     }
                     ui.end_row();
@@ -436,18 +465,24 @@ fn build_scaling_phases(
     firms: &[FirmConfig],
 ) -> Vec<ScalingPhase> {
     // Find the firm with the best split
-    let best_firm = firms
-        .iter()
-        .max_by(|a, b| {
-            let sa: f64 = a.firm.profit_split_pct.to_string().parse().unwrap_or(0.0);
-            let sb: f64 = b.firm.profit_split_pct.to_string().parse().unwrap_or(0.0);
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-        });
+    let best_firm = firms.iter().max_by(|a, b| {
+        let sa: f64 = a.firm.profit_split_pct.to_string().parse().unwrap_or(0.0);
+        let sb: f64 = b.firm.profit_split_pct.to_string().parse().unwrap_or(0.0);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let (split_pct, target_pct, challenge_type) = match best_firm {
         Some(f) => (
-            f.firm.profit_split_pct.to_string().parse::<f64>().unwrap_or(80.0),
-            f.firm.profit_target_pct.to_string().parse::<f64>().unwrap_or(8.0),
+            f.firm
+                .profit_split_pct
+                .to_string()
+                .parse::<f64>()
+                .unwrap_or(80.0),
+            f.firm
+                .profit_target_pct
+                .to_string()
+                .parse::<f64>()
+                .unwrap_or(8.0),
             f.firm.challenge_type.clone(),
         ),
         None => (80.0, 8.0, "2step".to_string()),
@@ -461,42 +496,16 @@ fn build_scaling_phases(
 
     let mut phases = Vec::new();
 
-    // Challenge phase(s)
-    match challenge_type.as_str() {
-        "2step" => {
-            phases.push(ScalingPhase {
-                name: "Phase 1 — Challenge".to_string(),
-                account_size,
-                monthly_profit,
-                monthly_payout: 0.0, // no payouts during challenge
-                months_to_pass: months_to_target,
-            });
-            phases.push(ScalingPhase {
-                name: "Phase 2 — Verification".to_string(),
-                account_size,
-                monthly_profit,
-                monthly_payout: 0.0,
-                months_to_pass: months_to_target,
-            });
-        }
-        "1step" => {
-            phases.push(ScalingPhase {
-                name: "Challenge".to_string(),
-                account_size,
-                monthly_profit,
-                monthly_payout: 0.0,
-                months_to_pass: months_to_target,
-            });
-        }
-        _ => {
-            phases.push(ScalingPhase {
-                name: "Evaluation".to_string(),
-                account_size,
-                monthly_profit,
-                monthly_payout: 0.0,
-                months_to_pass: months_to_target,
-            });
-        }
+    // Challenge phase(s) — use the shared helper to get correct stage names
+    let stage_names = super::challenge_stage_names(&challenge_type);
+    for stage_name in &stage_names {
+        phases.push(ScalingPhase {
+            name: stage_name.to_string(),
+            account_size,
+            monthly_profit,
+            monthly_payout: 0.0, // no payouts during challenge
+            months_to_pass: months_to_target,
+        });
     }
 
     // Funded phase — now getting payouts

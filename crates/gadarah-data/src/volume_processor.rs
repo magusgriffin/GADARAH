@@ -203,8 +203,7 @@ mod tests {
         ];
         insert_bars(db.conn_mut(), "EURUSD", &bars).unwrap();
 
-        let stats =
-            process_volumes(db.conn(), "EURUSD", Timeframe::M15, 2, 3).unwrap();
+        let stats = process_volumes(db.conn(), "EURUSD", Timeframe::M15, 2, 3).unwrap();
         assert_eq!(stats.bars_updated, 1);
         assert_eq!(stats.large_clusters_skipped, 0);
 
@@ -225,8 +224,7 @@ mod tests {
         insert_bars(db.conn_mut(), "EURUSD", &bars).unwrap();
 
         // max_cluster = 4 → cluster of 5 is too large and is skipped
-        let stats =
-            process_volumes(db.conn(), "EURUSD", Timeframe::M15, 3, 4).unwrap();
+        let stats = process_volumes(db.conn(), "EURUSD", Timeframe::M15, 3, 4).unwrap();
         assert_eq!(stats.bars_updated, 0);
         assert_eq!(stats.large_clusters_skipped, 5);
     }
@@ -237,8 +235,7 @@ mod tests {
         let bars: Vec<Bar> = (0..5).map(|i| bar_with_vol(i * 900, 100)).collect();
         insert_bars(db.conn_mut(), "EURUSD", &bars).unwrap();
 
-        let stats =
-            process_volumes(db.conn(), "EURUSD", Timeframe::M15, 2, 3).unwrap();
+        let stats = process_volumes(db.conn(), "EURUSD", Timeframe::M15, 2, 3).unwrap();
         assert_eq!(stats.zero_volume_bars, 0);
         assert_eq!(stats.bars_updated, 0);
     }

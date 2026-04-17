@@ -1,3 +1,7 @@
+# Conditional only as of 2026-04-16.
+# FundingPips currently offers cTrader and appears available to U.S. users, but
+# its terms ban many toxic/news styles and only explicitly allow third-party EAs
+# when they are trade/risk managers.
 [firm]
 name = "FundingPips Zero"
 challenge_type = "fundingpips_zero"

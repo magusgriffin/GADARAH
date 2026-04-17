@@ -1,3 +1,6 @@
+# Legacy comparison profile only.
+# Official FundingPips products and terms changed; do not treat this file as a
+# production-ready U.S. cTrader bot profile without a fresh terms review.
 [firm]
 name = "FundingPips"
 challenge_type = "2step"

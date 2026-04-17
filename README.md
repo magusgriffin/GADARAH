@@ -39,3 +39,11 @@ As of 2026-04-02, the default CLI/profile is aligned to **The5ers Hyper Growth**
 balance/equity, and a `6%` stopout below initial balance. Optional non-default
 firm profiles remain under `config/firms/`. FundingPips profiles can now load
 blackout windows from [fundingpips_blackouts.toml](/home/ilovehvn/GADARAH/config/compliance/fundingpips_blackouts.toml).
+
+As of 2026-04-16, the clean U.S. `cTrader` + bot-friendly targets verified from
+official sources are **The5ers Hyper Growth** and **FTMO** (`1-Step` / `2-Step`),
+with **The5ers** still the best-aligned live baseline for this repo. Read
+[PROJECT_READINESS_2026-04-16.md](/home/ilovehvn/GADARAH/PROJECT_READINESS_2026-04-16.md)
+before using any non-default firm profile: FundingPips is now comparison-only /
+conditional, while Blue Guardian and Alpha One are not valid U.S. `cTrader`
+bot deployment targets for this project.

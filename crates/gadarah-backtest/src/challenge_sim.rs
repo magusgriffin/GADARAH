@@ -32,6 +32,7 @@ pub enum TotalDrawdownMode {
     StaticFromStart,
     PercentOfPeak,
     FixedAmountFromPeakLockedAtStart,
+    FixedAmountFromEndOfDayPeak,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,31 +87,32 @@ pub struct ChallengeRules {
 }
 
 impl ChallengeRules {
-    /// FTMO 1-Step (FTMO Challenge) as of April 2026.
+    /// FTMO 1-Step as reflected in FTMO Trading Objectives as of April 2026.
     ///
     /// - Profit target: 10%
-    /// - Daily loss limit: 5% of initial balance (from start-of-day equity/balance,
-    ///   whichever is higher — includes unrealized PnL)
-    /// - Max loss limit: 10% of initial balance (static, NOT trailing)
-    /// - Minimum trading days: 4 calendar days with at least one trade
+    /// - Daily loss limit: 3% of initial balance, recalculated from the prior
+    ///   end-of-day account balance at midnight CE(S)T
+    /// - Max loss limit: 10% of initial balance, trailing from the highest
+    ///   preceding end-of-day balance (can only increase, never decrease)
+    /// - Best Day Rule: most profitable day must be <= 50% of positive-day profit
+    /// - No prescribed minimum duration; in practice the Best Day Rule usually
+    ///   makes one-day passes impossible and two-day passes rare
     /// - No time limit
-    /// - No consistency rule
-    /// - News trading allowed (but risky — FTMO monitors for gambling behavior)
-    /// - Weekend holding allowed on challenge (restricted on funded)
+    /// - News trading allowed during the evaluation
     pub fn ftmo_1step() -> Self {
         Self {
             name: "FTMO 1-Step".into(),
             stages: vec![ChallengeStageRules {
                 name: "FTMO Challenge".into(),
                 target_pct: dec!(10.0),
-                daily_dd_limit_pct: dec!(5.0),
+                daily_dd_limit_pct: dec!(3.0),
                 max_dd_limit_pct: dec!(10.0),
-                min_trading_days: 4,
+                min_trading_days: 0,
                 trailing_dd: false,
-                consistency_cap_pct: Decimal::ZERO,
-                daily_dd_mode: DailyDrawdownMode::EndOfDayHighWatermark,
-                overnight_equity_mode: OvernightEquityMode::FullTradePnlAtRollover,
-                total_dd_mode: TotalDrawdownMode::StaticFromStart,
+                consistency_cap_pct: dec!(50.0),
+                daily_dd_mode: DailyDrawdownMode::DayStartBalance,
+                overnight_equity_mode: OvernightEquityMode::ClosedTradesOnly,
+                total_dd_mode: TotalDrawdownMode::FixedAmountFromEndOfDayPeak,
                 daily_limit_action: DailyLimitAction::FailAccount,
                 min_day_profit_pct_for_day_count: Decimal::ZERO,
                 min_trade_duration_secs_for_day_count: 0,
@@ -520,6 +522,7 @@ fn simulate_stage(
 ) -> ChallengeStageSimResult {
     let mut balance = starting_balance;
     let mut high_water_mark = starting_balance;
+    let mut end_of_day_peak_balance = starting_balance;
     let mut current_day = trades.first().map_or(0, |trade| utc_day(trade.closed_at));
     let mut daily_reference_balance = match rules.daily_dd_mode {
         DailyDrawdownMode::DayStartBalance => starting_balance,
@@ -554,6 +557,9 @@ fn simulate_stage(
         let trade_day = utc_day(trade.closed_at);
 
         if trade_day != current_day {
+            if rules.total_dd_mode == TotalDrawdownMode::FixedAmountFromEndOfDayPeak {
+                end_of_day_peak_balance = end_of_day_peak_balance.max(balance);
+            }
             current_day = trade_day;
             daily_reference_balance = match rules.daily_dd_mode {
                 DailyDrawdownMode::DayStartBalance => balance,
@@ -603,9 +609,12 @@ fn simulate_stage(
             }
         }
 
-        let total_dd_reference =
-            total_dd_reference_balance(starting_balance, high_water_mark, rules);
-        let total_dd_floor = total_dd_breach_floor(starting_balance, high_water_mark, rules);
+        let total_dd_peak = match rules.total_dd_mode {
+            TotalDrawdownMode::FixedAmountFromEndOfDayPeak => end_of_day_peak_balance,
+            _ => high_water_mark,
+        };
+        let total_dd_reference = total_dd_reference_balance(starting_balance, total_dd_peak, rules);
+        let total_dd_floor = total_dd_breach_floor(starting_balance, total_dd_peak, rules);
         let total_dd = (total_dd_reference - balance).max(Decimal::ZERO);
         let total_dd_pct = if starting_balance > Decimal::ZERO {
             total_dd / starting_balance * dec!(100)
@@ -772,6 +781,7 @@ fn total_dd_reference_balance(
         TotalDrawdownMode::FixedAmountFromPeakLockedAtStart => {
             high_water_mark.min(starting_balance + limit_amount)
         }
+        TotalDrawdownMode::FixedAmountFromEndOfDayPeak => high_water_mark.max(starting_balance),
     }
 }
 
@@ -789,6 +799,7 @@ fn total_dd_breach_floor(
         TotalDrawdownMode::FixedAmountFromPeakLockedAtStart => {
             (high_water_mark - limit_amount).min(starting_balance)
         }
+        TotalDrawdownMode::FixedAmountFromEndOfDayPeak => high_water_mark - limit_amount,
     }
 }
 
@@ -1016,16 +1027,17 @@ mod tests {
     }
 
     #[test]
-    fn challenge_not_enough_days() {
+    fn challenge_best_day_rule_blocks_imbalanced_two_day_pass() {
         let trades = vec![
-            trade(1700000000, 1700001800, dec!(600)),
-            trade(1700086400, 1700088200, dec!(600)),
+            trade(1700000000, 1700001800, dec!(700)),
+            trade(1700086400, 1700088200, dec!(300)),
         ];
 
         let result = simulate_challenge(&trades, dec!(10000), &ChallengeRules::ftmo_1step());
         assert!(!result.passed);
         assert!(result.stage_results[0].target_reached);
-        assert!(!result.min_days_met);
+        assert!(result.min_days_met);
+        assert!(!result.consistency_met);
     }
 
     #[test]
@@ -1092,6 +1104,24 @@ mod tests {
         assert!(result.max_dd_breached);
         assert_eq!(result.stage_results[0].stage_rules.name, "Assessment");
         assert_eq!(result.stage_results[0].max_total_dd_pct, dec!(6.10));
+    }
+
+    #[test]
+    fn ftmo_1step_max_loss_only_reprices_after_day_close() {
+        let day0 = 20_000 * 86_400;
+        let trades = vec![
+            trade(day0 + 3_600, day0 + 5_400, dec!(700)),
+            trade(day0 + 7_200, day0 + 9_000, dec!(-1_200)),
+            trade(day0 + 86_400 + 3_600, day0 + 86_400 + 5_400, dec!(-600)),
+        ];
+
+        let mut rules = ChallengeRules::ftmo_1step();
+        rules.stages[0].daily_dd_limit_pct = dec!(100.0);
+        let result = simulate_challenge(&trades, dec!(10000), &rules);
+
+        assert!(!result.passed);
+        assert!(result.max_dd_breached);
+        assert_eq!(result.stage_results[0].total_trades, 3);
     }
 
     #[test]

@@ -5,6 +5,11 @@
 **Language:** Rust (single binary, zero IPC, zero serialization bugs)
 **Target:** First funded payout in weeks, not months. Then compound via replication.
 
+> **2026-04-16 due-diligence note:** This plan contains legacy firm comparisons
+> that are no longer all valid for a U.S. `cTrader` bot workflow. Use
+> [PROJECT_READINESS_2026-04-16.md](/home/ilovehvn/GADARAH/PROJECT_READINESS_2026-04-16.md)
+> as the current source of truth for target selection and bot-friendliness.
+
 ---
 
 ## Preamble: What This Plan Absorbs

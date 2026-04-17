@@ -16,8 +16,8 @@ pub use decimal_math::{decimal_ln, decimal_sqrt};
 pub use regime::RegimeClassifier;
 
 pub use heads::{
-    AsianRangeHead, BreakoutHead, GridHead, Head, MomentumHead, NewsHead, ScalpM1Head,
-    ScalpM5Head, SmcHead, TrendHead, VolProfileHead,
+    AsianRangeHead, BreakoutHead, GridHead, Head, MomentumHead, NewsHead, ScalpM1Head, ScalpM5Head,
+    SmcHead, TrendHead, VolProfileHead,
 };
 
 pub use heads::{

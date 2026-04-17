@@ -124,9 +124,7 @@ fn run_migrations(conn: &Connection) -> Result<(), DataError> {
         .prepare("SELECT broker_position_id FROM trades LIMIT 0")
         .is_ok();
     if !has_col {
-        conn.execute_batch(
-            "ALTER TABLE trades ADD COLUMN broker_position_id INTEGER;",
-        )?;
+        conn.execute_batch("ALTER TABLE trades ADD COLUMN broker_position_id INTEGER;")?;
     }
     Ok(())
 }

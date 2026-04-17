@@ -89,6 +89,20 @@ impl AccountState {
                     dd_remaining / self.starting_balance * dec!(100),
                 )
             }
+            // FTMO 1-Step style: fixed dollar amount trailing from the highest
+            // preceding balance.  The real rule reprices only at end-of-day;
+            // using the intraday HWM is strictly more conservative (safe).
+            "eod_trailing" => {
+                let max_dd_amount = self.starting_balance * self.firm.max_dd_limit_pct / dec!(100);
+                let reference = self.high_water_mark.max(self.starting_balance);
+                let floor = reference - max_dd_amount;
+                let dd_used = (reference - equity).max(Decimal::ZERO);
+                let dd_remaining = (equity - floor).max(Decimal::ZERO);
+                (
+                    dd_used / self.starting_balance * dec!(100),
+                    dd_remaining / self.starting_balance * dec!(100),
+                )
+            }
             _ => {
                 let dd_used_pct =
                     (self.high_water_mark - equity) / self.high_water_mark * dec!(100);
@@ -227,6 +241,35 @@ mod tests {
         account.update_equity(dec!(5000));
 
         assert_eq!(account.dd_from_hwm_pct, dec!(6.0));
+        assert_eq!(account.dd_remaining_pct, Decimal::ZERO);
+    }
+
+    #[test]
+    fn eod_trailing_floor_rises_above_start_when_equity_peaks() {
+        let mut account = make_account(dec!(5000));
+        account.firm.dd_mode = "eod_trailing".into();
+        account.firm.max_dd_limit_pct = dec!(10.0);
+        // HWM rises to 5500 — floor should be 5500 - 500 = 5000
+        account.high_water_mark = dec!(5500);
+
+        account.update_equity(dec!(5100));
+
+        // dd_used = (5500 - 5100) / 5000 * 100 = 8.0%
+        assert_eq!(account.dd_from_hwm_pct, dec!(8.0));
+        // dd_remaining = (5100 - 5000) / 5000 * 100 = 2.0%
+        assert_eq!(account.dd_remaining_pct, dec!(2.0));
+    }
+
+    #[test]
+    fn eod_trailing_breaches_when_below_floor() {
+        let mut account = make_account(dec!(5000));
+        account.firm.dd_mode = "eod_trailing".into();
+        account.firm.max_dd_limit_pct = dec!(10.0);
+        account.high_water_mark = dec!(5500);
+
+        account.update_equity(dec!(4990));
+
+        // floor = 5500 - 500 = 5000, equity 4990 < floor
         assert_eq!(account.dd_remaining_pct, Decimal::ZERO);
     }
 

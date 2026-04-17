@@ -11,7 +11,10 @@ use gadarah_gui::{
     config::GadarahConfig,
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
-    ui::{BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, PayoutPanel, PerformancePanel, PriceChartPanel},
+    ui::{
+        BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, PayoutPanel, PerformancePanel,
+        PriceChartPanel,
+    },
 };
 
 struct GadarahApp {
@@ -44,7 +47,10 @@ impl GadarahApp {
         let config_path = PathBuf::from("config/gadarah.toml");
         if let Ok(config) = GadarahConfig::load(&config_path) {
             state.config = config;
-            state.add_log(LogLevel::Info, "Configuration loaded from config/gadarah.toml");
+            state.add_log(
+                LogLevel::Info,
+                "Configuration loaded from config/gadarah.toml",
+            );
         } else {
             state.add_log(LogLevel::Warn, "Using default configuration");
         }
@@ -52,15 +58,26 @@ impl GadarahApp {
         if let Ok(entries) = std::fs::read_dir("config/firms") {
             for entry in entries.flatten() {
                 if let Some(name) = entry.path().file_stem() {
-                    state.available_firms.push(name.to_string_lossy().to_string());
+                    state
+                        .available_firms
+                        .push(name.to_string_lossy().to_string());
                 }
             }
             state.available_firms.sort();
         }
 
-        state.add_log(LogLevel::Info, "GADARAH started — waiting for broker connection");
-        state.add_log(LogLevel::Info, "Use --state-file <path> to bridge live data from the CLI");
-        state.add_log(LogLevel::Info, "Go to the Config tab to configure your trading parameters");
+        state.add_log(
+            LogLevel::Info,
+            "GADARAH started — waiting for broker connection",
+        );
+        state.add_log(
+            LogLevel::Info,
+            "Use --state-file <path> to bridge live data from the CLI",
+        );
+        state.add_log(
+            LogLevel::Info,
+            "Go to the Config tab to configure your trading parameters",
+        );
     }
 }
 
@@ -75,7 +92,12 @@ impl eframe::App for GadarahApp {
                 egui::Frame::new()
                     .fill(theme::CARD)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 0 }),
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 0,
+                        bottom: 0,
+                    }),
             )
             .show(ctx, |ui| {
                 ui.set_height(52.0);
@@ -99,10 +121,26 @@ impl eframe::App for GadarahApp {
                     let (conn_text, conn_bg, conn_fg) = {
                         let g = self.state.lock().unwrap();
                         match g.connection_status {
-                            ConnectionStatus::ConnectedLive  => ("  LIVE  ",  egui::Color32::from_rgb(10, 38, 20), theme::GREEN),
-                            ConnectionStatus::ConnectedDemo  => ("  DEMO  ",  egui::Color32::from_rgb(40, 35, 5),  theme::YELLOW),
-                            ConnectionStatus::Connecting     => (" CONNECTING", egui::Color32::from_rgb(15, 25, 45), theme::BLUE),
-                            ConnectionStatus::Disconnected   => (" NOT CONNECTED ", egui::Color32::from_rgb(40, 10, 10), theme::RED),
+                            ConnectionStatus::ConnectedLive => (
+                                "  LIVE  ",
+                                egui::Color32::from_rgb(10, 38, 20),
+                                theme::GREEN,
+                            ),
+                            ConnectionStatus::ConnectedDemo => (
+                                "  DEMO  ",
+                                egui::Color32::from_rgb(40, 35, 5),
+                                theme::YELLOW,
+                            ),
+                            ConnectionStatus::Connecting => (
+                                " CONNECTING",
+                                egui::Color32::from_rgb(15, 25, 45),
+                                theme::BLUE,
+                            ),
+                            ConnectionStatus::Disconnected => (
+                                " NOT CONNECTED ",
+                                egui::Color32::from_rgb(40, 10, 10),
+                                theme::RED,
+                            ),
                         }
                     };
                     theme::pill(ui, conn_text, conn_bg, conn_fg);
@@ -135,7 +173,12 @@ impl eframe::App for GadarahApp {
                 egui::Frame::new()
                     .fill(theme::CARD)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 0 }),
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 0,
+                        bottom: 0,
+                    }),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -146,7 +189,9 @@ impl eframe::App for GadarahApp {
                         format!("Markets tracked: {}", g.regime_by_symbol.len()),
                     ];
                     for (i, item) in items.iter().enumerate() {
-                        if i > 0 { ui.separator(); }
+                        if i > 0 {
+                            ui.separator();
+                        }
                         ui.label(RichText::new(item).size(11.0).color(theme::DIM));
                     }
                 });
@@ -154,13 +199,22 @@ impl eframe::App for GadarahApp {
 
         // ── Main panel ───────────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::same(0i8)))
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::same(0i8)),
+            )
             .show(ctx, |ui| {
                 // Tab bar
                 egui::Frame::new()
                     .fill(theme::CARD)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 0 })
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 0,
+                        bottom: 0,
+                    })
                     .show(ui, |ui| {
                         ui.set_height(44.0);
                         ui.horizontal_centered(|ui| {
@@ -175,13 +229,15 @@ impl eframe::App for GadarahApp {
                             ];
                             for (i, label) in tabs.iter().enumerate() {
                                 let selected = self.selected_tab == i;
-                                let fg = if selected { theme::ACCENT } else { theme::MUTED };
+                                let fg = if selected {
+                                    theme::ACCENT
+                                } else {
+                                    theme::MUTED
+                                };
                                 let btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new(*label).size(13.5).color(fg),
-                                    )
-                                    .frame(false)
-                                    .min_size(egui::vec2(0.0, 44.0)),
+                                    egui::Button::new(RichText::new(*label).size(13.5).color(fg))
+                                        .frame(false)
+                                        .min_size(egui::vec2(0.0, 44.0)),
                                 );
                                 if selected {
                                     ui.painter().hline(
@@ -265,13 +321,16 @@ fn apply_state_snapshot(s: &mut SharedState, v: &serde_json::Value) {
     use std::str::FromStr;
 
     let dec = |key: &str| -> Decimal {
-        v[key].as_str().and_then(|s| Decimal::from_str(s).ok()).unwrap_or(Decimal::ZERO)
+        v[key]
+            .as_str()
+            .and_then(|s| Decimal::from_str(s).ok())
+            .unwrap_or(Decimal::ZERO)
     };
 
-    s.balance    = dec("balance");
-    s.equity     = dec("equity");
+    s.balance = dec("balance");
+    s.equity = dec("equity");
     s.free_margin = dec("free_margin");
-    s.daily_pnl  = dec("daily_pnl");
+    s.daily_pnl = dec("daily_pnl");
 
     s.kill_switch_active = v["kill_switch_active"].as_bool().unwrap_or(false);
     if s.kill_switch_active && s.kill_switch_reason.is_none() {
@@ -296,7 +355,10 @@ fn apply_state_snapshot(s: &mut SharedState, v: &serde_json::Value) {
                 _ => Direction::Buy,
             };
             let dec_field = |key: &str| -> Decimal {
-                p[key].as_str().and_then(|s| Decimal::from_str(s).ok()).unwrap_or(Decimal::ZERO)
+                p[key]
+                    .as_str()
+                    .and_then(|s| Decimal::from_str(s).ok())
+                    .unwrap_or(Decimal::ZERO)
             };
             s.positions.push(gadarah_gui::state::Position {
                 id: p["position_id"].as_u64().unwrap_or(0),

@@ -18,8 +18,8 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::{ATR, EMA, VWAP};
 use crate::types::{
-    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind,
-    TradeSignal, Timeframe,
+    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 #[derive(Debug, Clone)]
@@ -147,8 +147,7 @@ impl Head for ScalpM5Head {
         }
 
         let band = atr * self.config.vwap_band_mult;
-        let price_near_vwap =
-            bar.close >= vwap - band && bar.close <= vwap + band;
+        let price_near_vwap = bar.close >= vwap - band && bar.close <= vwap + band;
 
         if !price_near_vwap {
             return vec![];

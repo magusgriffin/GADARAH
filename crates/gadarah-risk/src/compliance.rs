@@ -232,9 +232,9 @@ impl PropFirmComplianceManager {
             }
         } else if self.program.is_the5ers() {
             if matches!(signal.head, HeadId::ScalpM1 | HeadId::ScalpM5) {
-                return Err(self.reject(
-                    "The5ers: tick-scalping heads blocked to avoid pattern flags",
-                ));
+                return Err(
+                    self.reject("The5ers: tick-scalping heads blocked to avoid pattern flags")
+                );
             }
         }
 
@@ -458,10 +458,7 @@ fn detect_program(firm: &FirmConfig) -> FirmProgram {
 
     // FTMO
     if name.contains("ftmo") || challenge_type.starts_with("ftmo") {
-        if name.contains("2-step")
-            || name.contains("2 step")
-            || challenge_type.contains("2step")
-        {
+        if name.contains("2-step") || name.contains("2 step") || challenge_type.contains("2step") {
             return FirmProgram::FtmoTwoStep;
         }
         return FirmProgram::FtmoOneStep;
@@ -515,7 +512,7 @@ fn config_for_program(program: FirmProgram) -> ComplianceConfig {
             same_trade_idea_window_secs: 300,
             max_trade_idea_risk_pct: dec!(5.0), // FTMO doesn't have FP's 3% cap
             recent_baseline_trades: 5,
-            max_lot_jump_vs_median: dec!(2.0), // stricter than FP
+            max_lot_jump_vs_median: dec!(2.0),  // stricter than FP
             max_risk_jump_vs_median: dec!(1.5), // stricter — FTMO consistency
             max_spread_pips: None,
         },
@@ -591,10 +588,10 @@ mod tests {
             name: "FTMO 1-Step".into(),
             challenge_type: "ftmo_1step".into(),
             profit_target_pct: dec!(10.0),
-            daily_dd_limit_pct: dec!(5.0),
+            daily_dd_limit_pct: dec!(3.0),
             max_dd_limit_pct: dec!(10.0),
-            dd_mode: "static".into(),
-            min_trading_days: 4,
+            dd_mode: "eod_trailing".into(),
+            min_trading_days: 0,
             news_trading_allowed: true,
             max_positions: 5,
             profit_split_pct: dec!(80.0),

@@ -17,8 +17,8 @@ use crate::tuner::{find_robust_params, tune_stress_params};
 use gadarah_core::Timeframe;
 use gadarah_data::{
     aggregate_bars, bar_time_range, count_bars, detect_csv_format, import_csv, import_dataset_dir,
-    list_symbols, list_timeframes, load_all_bars, CsvFormat, Database, DatasetImportOptions,
-    FetchConfig, stream_and_insert,
+    list_symbols, list_timeframes, load_all_bars, stream_and_insert, CsvFormat, Database,
+    DatasetImportOptions, FetchConfig,
 };
 
 const DEFAULT_CONFIG_PATH: &str = "config/gadarah.toml";
@@ -237,11 +237,15 @@ fn cmd_auth(args: &[String]) {
             println!("Credentials saved to {env_file}");
             println!();
             println!("To use them:");
-            println!("  source {env_file} && gadarah connect-test --firm config/firms/ftmo_2step.toml{}",
-                if selected.is_live { " --live" } else { "" });
+            println!(
+                "  source {env_file} && gadarah connect-test --firm config/firms/ftmo_2step.toml{}",
+                if selected.is_live { " --live" } else { "" }
+            );
             println!();
-            println!("Token expires in ~{}h. Refresh with:",
-                result.expires_in / 3600);
+            println!(
+                "Token expires in ~{}h. Refresh with:",
+                result.expires_in / 3600
+            );
             println!("  source {env_file} && gadarah auth --refresh");
         }
         Err(e) => {
@@ -280,20 +284,26 @@ fn cmd_fetch(args: &[String]) {
         .unwrap_or_else(|| "M15".to_string())
         .split(',')
         .filter_map(|s| match s.trim().to_uppercase().as_str() {
-            "M1"  => Some(Timeframe::M1),
-            "M5"  => Some(Timeframe::M5),
+            "M1" => Some(Timeframe::M1),
+            "M5" => Some(Timeframe::M5),
             "M15" => Some(Timeframe::M15),
-            "H1"  => Some(Timeframe::H1),
-            "H4"  => Some(Timeframe::H4),
-            "D1"  => Some(Timeframe::D1),
-            other => { eprintln!("Unknown timeframe: {other}"); None }
+            "H1" => Some(Timeframe::H1),
+            "H4" => Some(Timeframe::H4),
+            "D1" => Some(Timeframe::D1),
+            other => {
+                eprintln!("Unknown timeframe: {other}");
+                None
+            }
         })
         .collect();
 
     let db_path = arg_value(args, "--db").unwrap_or_else(default_db_path);
     let mut db = match Database::open(&db_path) {
         Ok(db) => db,
-        Err(err) => { eprintln!("Failed to open database {db_path}: {err}"); return; }
+        Err(err) => {
+            eprintln!("Failed to open database {db_path}: {err}");
+            return;
+        }
     };
 
     let mut config = FetchConfig::new(&symbol, from, to);

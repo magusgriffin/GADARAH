@@ -11,13 +11,16 @@ use crate::state::{AppState, TradeRecord};
 use crate::theme;
 
 pub struct PerformancePanel {
-    pub filter_head:   Option<String>,
+    pub filter_head: Option<String>,
     pub filter_symbol: Option<String>,
 }
 
 impl Default for PerformancePanel {
     fn default() -> Self {
-        Self { filter_head: None, filter_symbol: None }
+        Self {
+            filter_head: None,
+            filter_symbol: None,
+        }
     }
 }
 
@@ -26,7 +29,11 @@ impl PerformancePanel {
         let g = state.lock().unwrap();
 
         theme::heading(ui, "Performance");
-        ui.label(RichText::new("How the bot has performed over its lifetime.").color(theme::MUTED).size(12.5));
+        ui.label(
+            RichText::new("How the bot has performed over its lifetime.")
+                .color(theme::MUTED)
+                .size(12.5),
+        );
         ui.add_space(12.0);
 
         // ── Stats cards ───────────────────────────────────────────────────────
@@ -35,32 +42,67 @@ impl PerformancePanel {
         ui.horizontal_wrapped(|ui| {
             let stats: Vec<(&str, String, egui::Color32)> = if has_trades {
                 vec![
-                    ("Trades",        format!("{}", g.total_trades),            theme::TEXT),
-                    ("Win Rate",      format!("{:.1}%", g.win_rate),
-                        if g.win_rate >= dec!(50) { theme::GREEN } else { theme::RED }),
-                    ("Profit Factor", format!("{:.2}", g.profit_factor),
-                        if g.profit_factor >= dec!(1.5) { theme::GREEN }
-                        else if g.profit_factor >= Decimal::ONE { theme::YELLOW }
-                        else { theme::RED }),
-                    ("Max DD",        format!("{:.2}%", g.max_drawdown_pct),
-                        if g.max_drawdown_pct <= dec!(5) { theme::GREEN }
-                        else if g.max_drawdown_pct <= dec!(10) { theme::YELLOW }
-                        else { theme::RED }),
-                    ("Sharpe",        format!("{:.2}", g.sharpe_ratio),
-                        if g.sharpe_ratio >= dec!(1) { theme::GREEN }
-                        else if g.sharpe_ratio >= dec!(0.5) { theme::YELLOW }
-                        else { theme::RED }),
-                    ("Expect.",       format!("{:.2}R", g.expectancy_r),
-                        if g.expectancy_r >= Decimal::ZERO { theme::GREEN } else { theme::RED }),
+                    ("Trades", format!("{}", g.total_trades), theme::TEXT),
+                    (
+                        "Win Rate",
+                        format!("{:.1}%", g.win_rate),
+                        if g.win_rate >= dec!(50) {
+                            theme::GREEN
+                        } else {
+                            theme::RED
+                        },
+                    ),
+                    (
+                        "Profit Factor",
+                        format!("{:.2}", g.profit_factor),
+                        if g.profit_factor >= dec!(1.5) {
+                            theme::GREEN
+                        } else if g.profit_factor >= Decimal::ONE {
+                            theme::YELLOW
+                        } else {
+                            theme::RED
+                        },
+                    ),
+                    (
+                        "Max DD",
+                        format!("{:.2}%", g.max_drawdown_pct),
+                        if g.max_drawdown_pct <= dec!(5) {
+                            theme::GREEN
+                        } else if g.max_drawdown_pct <= dec!(10) {
+                            theme::YELLOW
+                        } else {
+                            theme::RED
+                        },
+                    ),
+                    (
+                        "Sharpe",
+                        format!("{:.2}", g.sharpe_ratio),
+                        if g.sharpe_ratio >= dec!(1) {
+                            theme::GREEN
+                        } else if g.sharpe_ratio >= dec!(0.5) {
+                            theme::YELLOW
+                        } else {
+                            theme::RED
+                        },
+                    ),
+                    (
+                        "Expect.",
+                        format!("{:.2}R", g.expectancy_r),
+                        if g.expectancy_r >= Decimal::ZERO {
+                            theme::GREEN
+                        } else {
+                            theme::RED
+                        },
+                    ),
                 ]
             } else {
                 vec![
-                    ("Trades",   "0".to_string(),  theme::MUTED),
-                    ("Win Rate", "--".to_string(),  theme::MUTED),
-                    ("PF",       "--".to_string(),  theme::MUTED),
-                    ("Max DD",   "--".to_string(),  theme::MUTED),
-                    ("Sharpe",   "--".to_string(),  theme::MUTED),
-                    ("Expect.",  "--".to_string(),  theme::MUTED),
+                    ("Trades", "0".to_string(), theme::MUTED),
+                    ("Win Rate", "--".to_string(), theme::MUTED),
+                    ("PF", "--".to_string(), theme::MUTED),
+                    ("Max DD", "--".to_string(), theme::MUTED),
+                    ("Sharpe", "--".to_string(), theme::MUTED),
+                    ("Expect.", "--".to_string(), theme::MUTED),
                 ]
             };
 
@@ -78,9 +120,15 @@ impl PerformancePanel {
             ui.add_space(8.0);
 
             if g.equity_curve.is_empty() {
-                theme::empty_state(ui, "📈", "No Equity Data", "Equity curve will build as trades are executed.");
+                theme::empty_state(
+                    ui,
+                    "📈",
+                    "No Equity Data",
+                    "Equity curve will build as trades are executed.",
+                );
             } else {
-                let points: PlotPoints = g.equity_curve
+                let points: PlotPoints = g
+                    .equity_curve
                     .iter()
                     .enumerate()
                     .map(|(i, p)| [i as f64, p.equity.to_string().parse::<f64>().unwrap_or(0.0)])
@@ -92,11 +140,7 @@ impl PerformancePanel {
                     .y_axis_label("Account Value ($)")
                     .show_axes([false, true])
                     .show(ui, |plot_ui| {
-                        plot_ui.line(
-                            Line::new(points)
-                                .color(theme::ACCENT)
-                                .width(2.0),
-                        );
+                        plot_ui.line(Line::new(points).color(theme::ACCENT).width(2.0));
                     });
             }
         });
@@ -106,7 +150,8 @@ impl PerformancePanel {
         // ── Daily P&L history + projection ───────────────────────────────────
         {
             // Build daily PnL from trade history grouped by calendar day
-            let mut daily_pnl: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+            let mut daily_pnl: std::collections::BTreeMap<i64, f64> =
+                std::collections::BTreeMap::new();
             for t in &g.trade_history {
                 let day = t.timestamp - (t.timestamp % 86400); // floor to UTC midnight
                 let pnl_f: f64 = t.pnl.to_string().parse().unwrap_or(0.0);
@@ -124,20 +169,36 @@ impl PerformancePanel {
             }
 
             theme::card().show(ui, |ui| {
-                theme::section_label(ui, "DAILY P&L — Profit/loss per trading day + 30-day projection");
+                theme::section_label(
+                    ui,
+                    "DAILY P&L — Profit/loss per trading day + 30-day projection",
+                );
                 ui.add_space(8.0);
 
                 if daily_pnl.is_empty() {
-                    theme::empty_state(ui, "📅", "No Daily Data", "Trade history will populate this chart as the bot trades.");
+                    theme::empty_state(
+                        ui,
+                        "📅",
+                        "No Daily Data",
+                        "Trade history will populate this chart as the bot trades.",
+                    );
                 } else {
                     let days: Vec<(i64, f64)> = daily_pnl.into_iter().collect();
                     let n = days.len();
 
                     // Build bar chart for historical daily PnL
-                    let pnl_bars: Vec<Bar> = days.iter().enumerate().map(|(i, (_day, pnl))| {
-                        let color = if *pnl >= 0.0 { theme::GREEN } else { theme::RED };
-                        Bar::new(i as f64, *pnl).fill(color).width(0.7)
-                    }).collect();
+                    let pnl_bars: Vec<Bar> = days
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_day, pnl))| {
+                            let color = if *pnl >= 0.0 {
+                                theme::GREEN
+                            } else {
+                                theme::RED
+                            };
+                            Bar::new(i as f64, *pnl).fill(color).width(0.7)
+                        })
+                        .collect();
 
                     // Calculate average daily PnL for projection
                     let total_pnl: f64 = days.iter().map(|(_, p)| p).sum();
@@ -155,28 +216,67 @@ impl PerformancePanel {
 
                     // Build cumulative actual line
                     let mut running = 0.0;
-                    let cum_points: Vec<[f64; 2]> = days.iter().enumerate().map(|(i, (_, pnl))| {
-                        running += pnl;
-                        [i as f64, running]
-                    }).collect();
+                    let cum_points: Vec<[f64; 2]> = days
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, pnl))| {
+                            running += pnl;
+                            [i as f64, running]
+                        })
+                        .collect();
 
                     // Summary stats
                     let winning_days = days.iter().filter(|(_, p)| *p > 0.0).count();
                     let losing_days = days.iter().filter(|(_, p)| *p < 0.0).count();
-                    let best_day = days.iter().map(|(_, p)| *p).fold(f64::NEG_INFINITY, f64::max);
+                    let best_day = days
+                        .iter()
+                        .map(|(_, p)| *p)
+                        .fold(f64::NEG_INFINITY, f64::max);
                     let worst_day = days.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
 
                     ui.horizontal(|ui| {
                         for (label, value, color) in [
-                            ("Avg Daily", format!("${:.2}", avg_daily), if avg_daily >= 0.0 { theme::GREEN } else { theme::RED }),
+                            (
+                                "Avg Daily",
+                                format!("${:.2}", avg_daily),
+                                if avg_daily >= 0.0 {
+                                    theme::GREEN
+                                } else {
+                                    theme::RED
+                                },
+                            ),
                             ("Best Day", format!("${:.2}", best_day), theme::GREEN),
                             ("Worst Day", format!("${:.2}", worst_day), theme::RED),
-                            ("Win Days", format!("{}/{}", winning_days, n), if winning_days > losing_days { theme::GREEN } else { theme::RED }),
-                            ("30d Projection", format!("${:.0}", avg_daily * 30.0), if avg_daily >= 0.0 { theme::ACCENT } else { theme::RED }),
+                            (
+                                "Win Days",
+                                format!("{}/{}", winning_days, n),
+                                if winning_days > losing_days {
+                                    theme::GREEN
+                                } else {
+                                    theme::RED
+                                },
+                            ),
+                            (
+                                "30d Projection",
+                                format!("${:.0}", avg_daily * 30.0),
+                                if avg_daily >= 0.0 {
+                                    theme::ACCENT
+                                } else {
+                                    theme::RED
+                                },
+                            ),
                         ] {
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(label).size(10.5).color(theme::MUTED).strong());
-                                ui.label(RichText::new(value).size(13.0).color(color).monospace().strong());
+                                ui.label(
+                                    RichText::new(label).size(10.5).color(theme::MUTED).strong(),
+                                );
+                                ui.label(
+                                    RichText::new(value)
+                                        .size(13.0)
+                                        .color(color)
+                                        .monospace()
+                                        .strong(),
+                                );
                             });
                             ui.add_space(16.0);
                         }
@@ -194,11 +294,7 @@ impl PerformancePanel {
                         .show(ui, |plot_ui| {
                             plot_ui.bar_chart(BarChart::new(pnl_bars).name("Daily P&L"));
                             // Zero line
-                            plot_ui.hline(
-                                egui_plot::HLine::new(0.0)
-                                    .color(theme::DIM)
-                                    .width(1.0),
-                            );
+                            plot_ui.hline(egui_plot::HLine::new(0.0).color(theme::DIM).width(1.0));
                         });
 
                     ui.add_space(10.0);
@@ -227,11 +323,7 @@ impl PerformancePanel {
                                     .width(1.5)
                                     .style(egui_plot::LineStyle::dashed_dense()),
                             );
-                            plot_ui.hline(
-                                egui_plot::HLine::new(0.0)
-                                    .color(theme::DIM)
-                                    .width(1.0),
-                            );
+                            plot_ui.hline(egui_plot::HLine::new(0.0).color(theme::DIM).width(1.0));
                         });
                 }
             });
@@ -251,7 +343,14 @@ impl PerformancePanel {
                     .selected_text(self.filter_head.as_deref().unwrap_or("All"))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.filter_head, None, "All");
-                        for h in ["Momentum", "AsianRange", "Breakout", "Trend", "ScalpM1", "ScalpM5"] {
+                        for h in [
+                            "Momentum",
+                            "AsianRange",
+                            "Breakout",
+                            "Trend",
+                            "ScalpM1",
+                            "ScalpM5",
+                        ] {
                             ui.selectable_value(&mut self.filter_head, Some(h.to_string()), h);
                         }
                     });
@@ -263,26 +362,32 @@ impl PerformancePanel {
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.filter_symbol, None, "All");
                         for sym in ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"] {
-                            ui.selectable_value(&mut self.filter_symbol, Some(sym.to_string()), sym);
+                            ui.selectable_value(
+                                &mut self.filter_symbol,
+                                Some(sym.to_string()),
+                                sym,
+                            );
                         }
                     });
             });
 
             ui.add_space(8.0);
 
-            let filtered: Vec<&TradeRecord> = g.trade_history.iter()
+            let filtered: Vec<&TradeRecord> = g
+                .trade_history
+                .iter()
                 .filter(|t| {
                     let head_ok = self.filter_head.as_ref().map_or(true, |h| {
                         let s = match t.head {
-                            gadarah_core::HeadId::Momentum   => "Momentum",
+                            gadarah_core::HeadId::Momentum => "Momentum",
                             gadarah_core::HeadId::AsianRange => "AsianRange",
-                            gadarah_core::HeadId::Breakout   => "Breakout",
-                            gadarah_core::HeadId::Trend      => "Trend",
-                            gadarah_core::HeadId::Grid       => "Grid",
-                            gadarah_core::HeadId::Smc        => "Smc",
-                            gadarah_core::HeadId::News       => "News",
-                            gadarah_core::HeadId::ScalpM1    => "ScalpM1",
-                            gadarah_core::HeadId::ScalpM5    => "ScalpM5",
+                            gadarah_core::HeadId::Breakout => "Breakout",
+                            gadarah_core::HeadId::Trend => "Trend",
+                            gadarah_core::HeadId::Grid => "Grid",
+                            gadarah_core::HeadId::Smc => "Smc",
+                            gadarah_core::HeadId::News => "News",
+                            gadarah_core::HeadId::ScalpM1 => "ScalpM1",
+                            gadarah_core::HeadId::ScalpM5 => "ScalpM5",
                             gadarah_core::HeadId::VolProfile => "VolProfile",
                         };
                         s == h
@@ -293,11 +398,20 @@ impl PerformancePanel {
                 .collect();
 
             if filtered.is_empty() {
-                theme::empty_state(ui, "🔍", "No Matching Trades", "Try adjusting the strategy or market filter above.");
+                theme::empty_state(
+                    ui,
+                    "🔍",
+                    "No Matching Trades",
+                    "Try adjusting the strategy or market filter above.",
+                );
                 return;
             }
 
-            ui.label(RichText::new(format!("Showing {} trades", filtered.len())).color(theme::DIM).size(11.5));
+            ui.label(
+                RichText::new(format!("Showing {} trades", filtered.len()))
+                    .color(theme::DIM)
+                    .size(11.5),
+            );
             ui.add_space(4.0);
 
             egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -306,7 +420,10 @@ impl PerformancePanel {
                     .spacing([10.0, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        for h in ["Time", "Market", "Strategy", "Dir", "Entry", "Exit", "P&L", "R", "Result"] {
+                        for h in [
+                            "Time", "Market", "Strategy", "Dir", "Entry", "Exit", "P&L", "R",
+                            "Result",
+                        ] {
                             ui.label(RichText::new(h).color(theme::MUTED).size(12.0));
                         }
                         ui.end_row();
@@ -319,35 +436,60 @@ impl PerformancePanel {
                             ui.label(RichText::new(&trade.symbol).strong().size(12.5));
 
                             let head_s = match trade.head {
-                                gadarah_core::HeadId::Momentum   => "Momentum",
+                                gadarah_core::HeadId::Momentum => "Momentum",
                                 gadarah_core::HeadId::AsianRange => "AsianRange",
-                                gadarah_core::HeadId::Breakout   => "Breakout",
-                                gadarah_core::HeadId::Trend      => "Trend",
-                                gadarah_core::HeadId::Grid       => "Grid",
-                                gadarah_core::HeadId::Smc        => "SmartMoney",
-                                gadarah_core::HeadId::News       => "News",
-                                gadarah_core::HeadId::ScalpM1    => "ScalpM1",
-                                gadarah_core::HeadId::ScalpM5    => "ScalpM5",
+                                gadarah_core::HeadId::Breakout => "Breakout",
+                                gadarah_core::HeadId::Trend => "Trend",
+                                gadarah_core::HeadId::Grid => "Grid",
+                                gadarah_core::HeadId::Smc => "SmartMoney",
+                                gadarah_core::HeadId::News => "News",
+                                gadarah_core::HeadId::ScalpM1 => "ScalpM1",
+                                gadarah_core::HeadId::ScalpM5 => "ScalpM5",
                                 gadarah_core::HeadId::VolProfile => "VolProfile",
                             };
                             ui.label(RichText::new(head_s).color(theme::MUTED).size(12.0));
 
                             let (dc, ds) = match trade.direction {
-                                gadarah_core::Direction::Buy  => (theme::GREEN, "BUY"),
-                                gadarah_core::Direction::Sell => (theme::RED,   "SELL"),
+                                gadarah_core::Direction::Buy => (theme::GREEN, "BUY"),
+                                gadarah_core::Direction::Sell => (theme::RED, "SELL"),
                             };
                             ui.label(RichText::new(ds).monospace().color(dc).size(12.0).strong());
 
-                            ui.label(RichText::new(format!("{:.5}", trade.entry_price)).monospace().color(theme::MUTED).size(12.0));
-                            ui.label(RichText::new(format!("{:.5}", trade.exit_price)).monospace().color(theme::TEXT).size(12.0));
+                            ui.label(
+                                RichText::new(format!("{:.5}", trade.entry_price))
+                                    .monospace()
+                                    .color(theme::MUTED)
+                                    .size(12.0),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.5}", trade.exit_price))
+                                    .monospace()
+                                    .color(theme::TEXT)
+                                    .size(12.0),
+                            );
 
                             let pnl_c = theme::pnl_color(trade.pnl >= Decimal::ZERO);
-                            ui.label(RichText::new(format!("${:.2}", trade.pnl)).monospace().color(pnl_c).size(12.5).strong());
+                            ui.label(
+                                RichText::new(format!("${:.2}", trade.pnl))
+                                    .monospace()
+                                    .color(pnl_c)
+                                    .size(12.5)
+                                    .strong(),
+                            );
 
                             let r_c = theme::pnl_color(trade.r_multiple >= Decimal::ZERO);
-                            ui.label(RichText::new(format!("{:.2}R", trade.r_multiple)).monospace().color(r_c).size(12.0));
+                            ui.label(
+                                RichText::new(format!("{:.2}R", trade.r_multiple))
+                                    .monospace()
+                                    .color(r_c)
+                                    .size(12.0),
+                            );
 
-                            ui.label(RichText::new(&trade.close_reason).color(theme::MUTED).size(12.0));
+                            ui.label(
+                                RichText::new(&trade.close_reason)
+                                    .color(theme::MUTED)
+                                    .size(12.0),
+                            );
                             ui.end_row();
                         }
                     });

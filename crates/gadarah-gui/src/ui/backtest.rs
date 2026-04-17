@@ -7,7 +7,10 @@ use eframe::egui;
 use egui::RichText;
 use egui_plot::{Line, Plot, PlotPoints};
 
-use gadarah_backtest::{run_replay, run_walk_forward as run_wf, ReplayConfig, WalkForwardConfig};
+use gadarah_backtest::{
+    run_replay, run_walk_forward as run_wf, simulate_challenge, ChallengeSimResult, ReplayConfig,
+    WalkForwardConfig,
+};
 use gadarah_core::heads::{
     asian_range::{AsianRangeConfig, AsianRangeHead},
     breakout::{BreakoutConfig, BreakoutHead},
@@ -16,14 +19,17 @@ use gadarah_core::heads::{
 use gadarah_core::Timeframe;
 use gadarah_data::{load_all_bars, Database};
 
+use crate::config::FirmConfig;
 use crate::state::{AppState, BacktestResult, EquityPoint, LogLevel, TradeRecord};
 use crate::theme;
+use super::challenge_rules_for;
 
 pub struct BacktestPanel {
     selected_symbols: Vec<String>,
     selected_firm: String,
     walk_forward_results: Vec<WalkForwardFold>,
     db_path: String,
+    challenge_result: Option<ChallengeSimResult>,
 }
 
 struct WalkForwardFold {
@@ -41,6 +47,7 @@ impl BacktestPanel {
             selected_firm: "the5ers_hypergrowth".to_string(),
             walk_forward_results: Vec::new(),
             db_path: "data/gadarah.db".to_string(),
+            challenge_result: None,
         }
     }
 
@@ -209,11 +216,7 @@ impl BacktestPanel {
                             theme::RED
                         },
                     ),
-                    (
-                        "Sharpe",
-                        format!("{:.2}", bt.sharpe_ratio),
-                        theme::TEXT,
-                    ),
+                    ("Sharpe", format!("{:.2}", bt.sharpe_ratio), theme::TEXT),
                     (
                         "Expect.",
                         format!("{:.2}R", bt.expectancy_r),
@@ -242,12 +245,7 @@ impl BacktestPanel {
                     .equity_curve
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| {
-                        [
-                            i as f64,
-                            p.equity.to_string().parse::<f64>().unwrap_or(0.0),
-                        ]
-                    })
+                    .map(|(i, p)| [i as f64, p.equity.to_string().parse::<f64>().unwrap_or(0.0)])
                     .collect();
                 Plot::new("bt_equity")
                     .height(180.0)
@@ -256,6 +254,79 @@ impl BacktestPanel {
                     .show(ui, |plot_ui| {
                         plot_ui.line(Line::new(points).color(theme::ACCENT).width(2.0));
                     });
+            });
+            ui.add_space(12.0);
+        }
+
+        // Challenge simulation result
+        if let Some(ref cr) = self.challenge_result {
+            theme::card().show(ui, |ui| {
+                let status_color = if cr.passed { theme::GREEN } else { theme::RED };
+                let status_label = if cr.passed { "PASSED" } else { "FAILED" };
+                theme::section_label(
+                    ui,
+                    &format!("CHALLENGE SIMULATION — {} — {}", cr.rules.name, status_label),
+                );
+                ui.add_space(10.0);
+
+                let card_w = (ui.available_width() - 50.0) / 5.0;
+                ui.horizontal_wrapped(|ui| {
+                    theme::stat_card(
+                        ui,
+                        "Result",
+                        status_label,
+                        status_color,
+                        card_w,
+                    );
+                    ui.add_space(8.0);
+                    theme::stat_card(
+                        ui,
+                        "Profit",
+                        &format!("{:.2}%", cr.profit_pct),
+                        if cr.target_reached { theme::GREEN } else { theme::RED },
+                        card_w,
+                    );
+                    ui.add_space(8.0);
+                    theme::stat_card(
+                        ui,
+                        "Max Daily DD",
+                        &format!("{:.2}%", cr.max_daily_dd_pct),
+                        if cr.daily_dd_breached { theme::RED } else { theme::GREEN },
+                        card_w,
+                    );
+                    ui.add_space(8.0);
+                    theme::stat_card(
+                        ui,
+                        "Max Total DD",
+                        &format!("{:.2}%", cr.max_total_dd_pct),
+                        if cr.max_dd_breached { theme::RED } else { theme::GREEN },
+                        card_w,
+                    );
+                    ui.add_space(8.0);
+                    let days_str = cr
+                        .days_to_target
+                        .map(|d| format!("{}", d))
+                        .unwrap_or_else(|| "—".to_string());
+                    theme::stat_card(ui, "Trading Days", &days_str, theme::TEXT, card_w);
+                });
+
+                if let Some(ref reason) = cr.breach_reason {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("Breach: {}", reason))
+                            .color(theme::RED)
+                            .size(12.5),
+                    );
+                }
+
+                if !cr.consistency_met {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Best Day Rule / consistency check failed")
+                            .color(theme::ORANGE)
+                            .size(12.0),
+                    );
+                }
             });
             ui.add_space(12.0);
         }
@@ -347,10 +418,7 @@ impl BacktestPanel {
             theme::card().show(ui, |ui| {
                 theme::section_label(
                     ui,
-                    &format!(
-                        "INDIVIDUAL TRADES (showing last 50 of {})",
-                        bt.trades.len()
-                    ),
+                    &format!("INDIVIDUAL TRADES (showing last 50 of {})", bt.trades.len()),
                 );
                 ui.add_space(8.0);
                 egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -367,9 +435,7 @@ impl BacktestPanel {
                                 let t = chrono::DateTime::from_timestamp(trade.timestamp, 0)
                                     .map(|dt| dt.format("%m-%d %H:%M").to_string())
                                     .unwrap_or_default();
-                                ui.label(
-                                    RichText::new(t).monospace().color(theme::DIM).size(12.0),
-                                );
+                                ui.label(RichText::new(t).monospace().color(theme::DIM).size(12.0));
                                 ui.label(
                                     RichText::new(&trade.close_reason)
                                         .size(12.5)
@@ -393,11 +459,7 @@ impl BacktestPanel {
                                 } else {
                                     "Loss"
                                 };
-                                ui.label(
-                                    RichText::new(result_str)
-                                        .color(pc)
-                                        .size(12.0),
-                                );
+                                ui.label(RichText::new(result_str).color(pc).size(12.0));
                                 // Duration not available in TradeResult, show head instead
                                 ui.label(
                                     RichText::new(format!("{:?}", trade.head))
@@ -413,10 +475,17 @@ impl BacktestPanel {
         }
     }
 
-    fn run_backtest(&self, state: &AppState) {
+    fn run_backtest(&mut self, state: &AppState) {
         let mut g = state.lock().unwrap();
         g.backtest_running = true;
         g.add_log(LogLevel::Info, "Backtest started");
+
+        // Load firm config for the selected firm so DD limits match.
+        let firm_config = load_firm_config(&self.selected_firm);
+        let (daily_dd, max_dd) = match &firm_config {
+            Some(fc) => (fc.firm.daily_dd_limit_pct, fc.firm.max_dd_limit_pct),
+            None => (dec!(3.0), dec!(6.0)),
+        };
 
         let db = match Database::open(&self.db_path) {
             Ok(db) => db,
@@ -431,6 +500,7 @@ impl BacktestPanel {
         };
 
         let mut all_trades = Vec::new();
+        let mut all_backtest_trades = Vec::new();
         let mut all_equity: Vec<EquityPoint> = Vec::new();
         let mut combined_stats = None;
 
@@ -438,10 +508,7 @@ impl BacktestPanel {
             let bars = match load_all_bars(db.conn(), symbol, Timeframe::M15) {
                 Ok(b) if !b.is_empty() => b,
                 Ok(_) => {
-                    g.add_log(
-                        LogLevel::Warn,
-                        format!("No M15 bars found for {}", symbol),
-                    );
+                    g.add_log(LogLevel::Warn, format!("No M15 bars found for {}", symbol));
                     continue;
                 }
                 Err(e) => {
@@ -458,7 +525,7 @@ impl BacktestPanel {
                 format!("Running backtest on {} ({} bars)", symbol, bars.len()),
             );
 
-            let config = make_replay_config(symbol, dec!(10000));
+            let config = make_replay_config(symbol, dec!(10000), daily_dd, max_dd);
             let mut heads = make_heads(symbol);
 
             match run_replay(&bars, &mut heads, &config) {
@@ -472,7 +539,10 @@ impl BacktestPanel {
                         });
                     }
 
-                    // Convert trades
+                    // Keep raw TradeResult copies for challenge simulation
+                    all_backtest_trades.extend(result.trades.iter().cloned());
+
+                    // Convert trades for UI display
                     for t in &result.trades {
                         let head_name = format!("{:?}", t.head);
                         all_trades.push(TradeRecord {
@@ -513,6 +583,37 @@ impl BacktestPanel {
             }
         }
 
+        // Run challenge simulation using the proper ChallengeRules constructor
+        self.challenge_result = if let Some(fc) = &firm_config {
+            if !all_backtest_trades.is_empty() {
+                let rules = challenge_rules_for(fc);
+                let result = simulate_challenge(&all_backtest_trades, dec!(10000), &rules);
+                let status = if result.passed { "PASSED" } else { "FAILED" };
+                g.add_log(
+                    LogLevel::Info,
+                    format!(
+                        "Challenge sim ({}): {} — profit {:.2}%, max daily DD {:.2}%, max total DD {:.2}%",
+                        rules.name, status, result.profit_pct, result.max_daily_dd_pct, result.max_total_dd_pct,
+                    ),
+                );
+                if let Some(ref reason) = result.breach_reason {
+                    g.add_log(LogLevel::Warn, format!("Breach reason: {}", reason));
+                }
+                Some(result)
+            } else {
+                None
+            }
+        } else {
+            g.add_log(
+                LogLevel::Warn,
+                format!(
+                    "No firm config found for '{}' — challenge simulation skipped",
+                    self.selected_firm,
+                ),
+            );
+            None
+        };
+
         // Sort equity curve by timestamp
         all_equity.sort_by_key(|e| e.timestamp);
 
@@ -541,6 +642,12 @@ impl BacktestPanel {
     fn run_walk_forward(&mut self, state: &AppState) {
         let mut g = state.lock().unwrap();
         g.add_log(LogLevel::Info, "Walk-forward analysis started");
+
+        let firm_config = load_firm_config(&self.selected_firm);
+        let (daily_dd, max_dd) = match &firm_config {
+            Some(fc) => (fc.firm.daily_dd_limit_pct, fc.firm.max_dd_limit_pct),
+            None => (dec!(3.0), dec!(6.0)),
+        };
 
         let db = match Database::open(&self.db_path) {
             Ok(db) => db,
@@ -571,7 +678,7 @@ impl BacktestPanel {
                 }
             };
 
-            let config = make_replay_config(symbol, dec!(10000));
+            let config = make_replay_config(symbol, dec!(10000), daily_dd, max_dd);
             let wf_config = WalkForwardConfig {
                 num_folds: 5,
                 in_sample_ratio: 0.70,
@@ -586,11 +693,7 @@ impl BacktestPanel {
                         let oos = &fold.out_of_sample_stats;
                         self.walk_forward_results.push(WalkForwardFold {
                             fold: fold.fold_index + 1,
-                            sharpe: oos
-                                .sharpe_ratio
-                                .to_string()
-                                .parse::<f64>()
-                                .unwrap_or(0.0),
+                            sharpe: oos.sharpe_ratio.to_string().parse::<f64>().unwrap_or(0.0),
                             profit_factor: oos
                                 .profit_factor
                                 .to_string()
@@ -601,11 +704,7 @@ impl BacktestPanel {
                                 .to_string()
                                 .parse::<f64>()
                                 .unwrap_or(0.0),
-                            win_rate: oos
-                                .win_rate
-                                .to_string()
-                                .parse::<f64>()
-                                .unwrap_or(0.0),
+                            win_rate: oos.win_rate.to_string().parse::<f64>().unwrap_or(0.0),
                         });
                     }
 
@@ -631,7 +730,12 @@ impl BacktestPanel {
     }
 }
 
-fn make_replay_config(symbol: &str, balance: Decimal) -> ReplayConfig {
+fn make_replay_config(
+    symbol: &str,
+    balance: Decimal,
+    daily_dd_limit_pct: Decimal,
+    max_dd_limit_pct: Decimal,
+) -> ReplayConfig {
     ReplayConfig {
         symbol: symbol.to_string(),
         pip_size: if symbol.contains("JPY") {
@@ -642,14 +746,19 @@ fn make_replay_config(symbol: &str, balance: Decimal) -> ReplayConfig {
         pip_value_per_lot: dec!(10.0),
         starting_balance: balance,
         risk_pct: dec!(0.74),
-        daily_dd_limit_pct: dec!(4.0),
-        max_dd_limit_pct: dec!(6.0),
+        daily_dd_limit_pct,
+        max_dd_limit_pct,
         max_positions: 3,
         min_rr: dec!(1.5),
         max_spread_pips: dec!(3.0),
         mock_config: gadarah_broker::MockConfig::default(),
         consecutive_loss_halt: 5,
     }
+}
+
+fn load_firm_config(firm_name: &str) -> Option<FirmConfig> {
+    let path = std::path::PathBuf::from(format!("config/firms/{}.toml", firm_name));
+    FirmConfig::load(&path).ok()
 }
 
 fn make_heads(symbol: &str) -> Vec<Box<dyn gadarah_core::Head>> {

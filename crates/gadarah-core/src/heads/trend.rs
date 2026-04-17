@@ -127,7 +127,11 @@ impl Head for TrendHead {
 
         // Establish trend only when ADX confirms strength
         if adx_val >= self.config.adx_threshold {
-            self.trend_dir = Some(if fast_above { Direction::Buy } else { Direction::Sell });
+            self.trend_dir = Some(if fast_above {
+                Direction::Buy
+            } else {
+                Direction::Sell
+            });
         }
 
         let Some(dir) = self.trend_dir else {
@@ -200,7 +204,10 @@ impl Head for TrendHead {
             regime: regime.regime,
             session: session.session,
             pyramid_level: 0,
-            comment: format!("Trend pullback EMA{} ADX={:.1}", self.config.fast_period, adx_val),
+            comment: format!(
+                "Trend pullback EMA{} ADX={:.1}",
+                self.config.fast_period, adx_val
+            ),
             generated_at: bar.timestamp,
         }]
     }

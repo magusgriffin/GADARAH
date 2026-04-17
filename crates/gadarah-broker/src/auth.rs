@@ -188,9 +188,7 @@ fn wait_for_auth_code() -> Result<String, BrokerError> {
         BrokerError::Connection(format!("Failed to bind port {CALLBACK_PORT}: {e}"))
     })?;
 
-    println!(
-        "Waiting for authorization on http://localhost:{CALLBACK_PORT}/callback ..."
-    );
+    println!("Waiting for authorization on http://localhost:{CALLBACK_PORT}/callback ...");
 
     let (mut stream, _) = listener
         .accept()

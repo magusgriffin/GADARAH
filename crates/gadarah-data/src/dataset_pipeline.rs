@@ -85,7 +85,10 @@ impl PipelineReport {
 ///
 /// Loads all symbols/timeframes present in the DB (filtered by `config`),
 /// then runs gap-fill → volume-smooth → audit for each series.
-pub fn run_pipeline(conn: &Connection, config: &PipelineConfig) -> Result<PipelineReport, DataError> {
+pub fn run_pipeline(
+    conn: &Connection,
+    config: &PipelineConfig,
+) -> Result<PipelineReport, DataError> {
     // Determine which symbols to process.
     let all_symbols = list_symbols_in_db(conn)?;
     let symbols: Vec<String> = if config.symbols.is_empty() {
@@ -166,8 +169,7 @@ pub fn run_pipeline(conn: &Connection, config: &PipelineConfig) -> Result<Pipeli
 
 /// List all distinct symbols present in the bars table.
 fn list_symbols_in_db(conn: &Connection) -> Result<Vec<String>, DataError> {
-    let mut stmt =
-        conn.prepare_cached("SELECT DISTINCT symbol FROM bars ORDER BY symbol ASC")?;
+    let mut stmt = conn.prepare_cached("SELECT DISTINCT symbol FROM bars ORDER BY symbol ASC")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let symbols: Result<Vec<_>, _> = rows.collect();
     Ok(symbols?)
@@ -242,7 +244,7 @@ mod tests {
 
         assert_eq!(report.series.len(), 1);
         assert_eq!(report.total_gaps_filled, 1); // ts=1800 synthetic bar inserted
-        // Volume processor sees 2 zero-vol bars: ts=1800 (synthetic) + ts=2700 (real)
+                                                 // Volume processor sees 2 zero-vol bars: ts=1800 (synthetic) + ts=2700 (real)
         assert_eq!(report.total_volume_bars_fixed, 2);
     }
 

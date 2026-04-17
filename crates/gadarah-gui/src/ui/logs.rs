@@ -17,7 +17,13 @@ impl LogsPanel {
         };
 
         theme::heading(ui, "Event Log");
-        ui.label(RichText::new("All bot activity is recorded here. Filter by severity to focus on what matters.").color(theme::MUTED).size(12.5));
+        ui.label(
+            RichText::new(
+                "All bot activity is recorded here. Filter by severity to focus on what matters.",
+            )
+            .color(theme::MUTED)
+            .size(12.5),
+        );
         ui.add_space(10.0);
 
         // ── Filter bar ───────────────────────────────────────────────────────
@@ -27,10 +33,10 @@ impl LogsPanel {
                 let mut new_filter = current_filter;
 
                 let levels: &[(LogLevel, &str, egui::Color32)] = &[
-                    (LogLevel::Trace, "Everything",  theme::DIM),
-                    (LogLevel::Debug, "Debug+",      theme::MUTED),
-                    (LogLevel::Info,  "Info+",        theme::TEXT),
-                    (LogLevel::Warn,  "Warnings+",   theme::YELLOW),
+                    (LogLevel::Trace, "Everything", theme::DIM),
+                    (LogLevel::Debug, "Debug+", theme::MUTED),
+                    (LogLevel::Info, "Info+", theme::TEXT),
+                    (LogLevel::Warn, "Warnings+", theme::YELLOW),
                     (LogLevel::Error, "Errors Only", theme::RED),
                 ];
 
@@ -59,7 +65,11 @@ impl LogsPanel {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{} entries", logs.len())).color(theme::DIM).size(11.5));
+                    ui.label(
+                        RichText::new(format!("{} entries", logs.len()))
+                            .color(theme::DIM)
+                            .size(11.5),
+                    );
                 });
             });
         });
@@ -74,7 +84,12 @@ impl LogsPanel {
                 .max_height(ui.available_height() - 20.0)
                 .show(ui, |ui| {
                     if logs.is_empty() {
-                        theme::empty_state(ui, "📋", "No Log Entries", "No events at this filter level. Try selecting a lower severity.");
+                        theme::empty_state(
+                            ui,
+                            "📋",
+                            "No Log Entries",
+                            "No events at this filter level. Try selecting a lower severity.",
+                        );
                     } else {
                         for (i, entry) in logs.iter().rev().enumerate() {
                             Self::log_row(ui, entry, i % 2 == 0);
@@ -86,11 +101,11 @@ impl LogsPanel {
 
     fn log_row(ui: &mut egui::Ui, entry: &LogEntry, odd: bool) {
         let (level_color, level_bg) = match entry.level {
-            LogLevel::Trace => (theme::DIM,    egui::Color32::TRANSPARENT),
-            LogLevel::Debug => (theme::MUTED,  egui::Color32::TRANSPARENT),
-            LogLevel::Info  => (theme::TEXT,   egui::Color32::TRANSPARENT),
-            LogLevel::Warn  => (theme::YELLOW, egui::Color32::from_rgb(30, 24, 5)),
-            LogLevel::Error => (theme::RED,    egui::Color32::from_rgb(35, 8, 8)),
+            LogLevel::Trace => (theme::DIM, egui::Color32::TRANSPARENT),
+            LogLevel::Debug => (theme::MUTED, egui::Color32::TRANSPARENT),
+            LogLevel::Info => (theme::TEXT, egui::Color32::TRANSPARENT),
+            LogLevel::Warn => (theme::YELLOW, egui::Color32::from_rgb(30, 24, 5)),
+            LogLevel::Error => (theme::RED, egui::Color32::from_rgb(35, 8, 8)),
         };
 
         let row_bg = if level_bg != egui::Color32::TRANSPARENT {
@@ -104,7 +119,12 @@ impl LogsPanel {
         egui::Frame::new()
             .fill(row_bg)
             .corner_radius(4u8)
-            .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 3 })
+            .inner_margin(egui::Margin {
+                left: 8,
+                right: 8,
+                top: 3,
+                bottom: 3,
+            })
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let time_str = chrono::DateTime::from_timestamp(entry.timestamp, 0)
@@ -113,7 +133,10 @@ impl LogsPanel {
                     ui.add_sized(
                         [60.0, 16.0],
                         egui::Label::new(
-                            RichText::new(time_str).color(theme::DIM).monospace().size(11.5),
+                            RichText::new(time_str)
+                                .color(theme::DIM)
+                                .monospace()
+                                .size(11.5),
                         ),
                     );
                     ui.add_sized(

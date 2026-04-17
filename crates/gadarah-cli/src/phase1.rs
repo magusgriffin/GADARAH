@@ -1,18 +1,18 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
+use std::io::Write as IoWrite;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::io::Write as IoWrite;
 
 use rusqlite::params;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::{error, info, warn};
 use serde_json;
+use tracing::{error, info, warn};
 
 use gadarah_backtest::{
     run_engine, run_monte_carlo, run_stress_test, run_walk_forward_engine, simulate_challenge,
@@ -332,7 +332,12 @@ pub fn run_validate(args: &[String]) {
             }
         };
 
-        println!("\n--- {} ({} bars, {} trades) ---", symbol, sym_bars.len(), result.stats.total_trades);
+        println!(
+            "\n--- {} ({} bars, {} trades) ---",
+            symbol,
+            sym_bars.len(),
+            result.stats.total_trades
+        );
         print_stats_report(&result.stats, 0.0);
         print_engine_diagnostics(&result.diagnostics);
 
@@ -389,7 +394,10 @@ pub fn run_validate(args: &[String]) {
             build_engine_config_for(&ctx, &ctx.symbol, positions_per_symbol),
         ),
         _ => {
-            eprintln!("Primary symbol {} had no data; cannot run walk-forward", ctx.symbol);
+            eprintln!(
+                "Primary symbol {} had no data; cannot run walk-forward",
+                ctx.symbol
+            );
             return;
         }
     };
@@ -467,8 +475,7 @@ pub fn run_validate(args: &[String]) {
 
     let selected_rules = challenge_rules_for(&ctx.firm_file);
     let challenge_result = simulate_challenge(&all_trades, ctx.balance, &selected_rules);
-    let batch_result =
-        simulate_challenge_batch(&all_trades, ctx.balance, &selected_rules, 100, 42);
+    let batch_result = simulate_challenge_batch(&all_trades, ctx.balance, &selected_rules, 100, 42);
     println!("\n{}", "=".repeat(60));
     println!("CHALLENGE SIMULATION — {}", selected_rules.name);
     println!("{}", "=".repeat(60));
@@ -693,14 +700,8 @@ pub fn run_connect_test(args: &[String]) {
     println!("{}", "=".repeat(60));
     println!("cTrader API CONNECTION TEST");
     println!("{}", "=".repeat(60));
-    println!(
-        "Firm:   {}",
-        ctx.firm_file.firm.name
-    );
-    println!(
-        "Server: {}",
-        if live_server { "LIVE" } else { "DEMO" }
-    );
+    println!("Firm:   {}", ctx.firm_file.firm.name);
+    println!("Server: {}", if live_server { "LIVE" } else { "DEMO" });
     println!();
 
     let mut client = match build_ctrader_client(&ctx, live_server) {
@@ -876,12 +877,8 @@ pub fn run_live(args: &[String]) {
     if let Ok(reconcile) = client.reconcile_blocking() {
         let unclosed = load_unclosed_trade_count(db.conn(), account_id).unwrap_or(0);
         if unclosed > 0 || reconcile.open_position_count > 0 {
-            let recovered = recover_positions(
-                &db,
-                account_id,
-                &reconcile.open_position_ids,
-                &ctx.symbol,
-            );
+            let recovered =
+                recover_positions(&db, account_id, &reconcile.open_position_ids, &ctx.symbol);
             let n_recovered = recovered.len();
             runtime.positions_by_head = recovered;
 
@@ -895,8 +892,7 @@ pub fn run_live(args: &[String]) {
             }
 
             // Warn about orphans we couldn't match
-            let unmatched_broker =
-                reconcile.open_position_count.saturating_sub(n_recovered);
+            let unmatched_broker = reconcile.open_position_count.saturating_sub(n_recovered);
             let unmatched_db = unclosed.saturating_sub(n_recovered);
             if unmatched_broker > 0 || unmatched_db > 0 {
                 let msg = format!(
@@ -936,8 +932,8 @@ pub fn run_live(args: &[String]) {
 
     // Circuit breaker state
     let mut consecutive_tick_failures: u32 = 0;
-    const TICK_FAIL_WARN_THRESHOLD: u32 = 60;   // ~60 s at 1 s poll
-    const TICK_FAIL_EXIT_THRESHOLD: u32 = 300;   // ~5 min
+    const TICK_FAIL_WARN_THRESHOLD: u32 = 60; // ~60 s at 1 s poll
+    const TICK_FAIL_EXIT_THRESHOLD: u32 = 300; // ~5 min
 
     loop {
         // ── Check for shutdown signal ────────────────────────────────────
@@ -1101,7 +1097,9 @@ fn process_live_bar(
     if regime_age > bar_duration_secs * 3 {
         warn!(
             "bar={} regime is stale ({} s old, limit {} s) — skipping signal evaluation",
-            bar.timestamp, regime_age, bar_duration_secs * 3
+            bar.timestamp,
+            regime_age,
+            bar_duration_secs * 3
         );
         return;
     }
@@ -1169,12 +1167,19 @@ fn process_live_bar(
                                     net_pnl,
                                 );
                                 println!("{close_msg}");
-                                let emoji = if net_pnl >= Decimal::ZERO { "💰" } else { "📉" };
+                                let emoji = if net_pnl >= Decimal::ZERO {
+                                    "💰"
+                                } else {
+                                    "📉"
+                                };
                                 crate::notify_discord(&format!("{emoji} {close_msg}"));
                             }
                             Err(err) => {
                                 warn!("Close failed for {:?}: {err}", signal.head);
-                                crate::notify_discord(&format!("❌ Close failed {:?}: {err}", signal.head));
+                                crate::notify_discord(&format!(
+                                    "❌ Close failed {:?}: {err}",
+                                    signal.head
+                                ));
                                 runtime.positions_by_head.insert(signal.head, position);
                             }
                         }
@@ -1424,8 +1429,7 @@ fn process_live_bar(
                 Decimal::ZERO
             };
             let daily_dd_used = if runtime.day_open_equity > Decimal::ZERO {
-                (runtime.day_open_equity - info.equity).max(Decimal::ZERO)
-                    / runtime.day_open_equity
+                (runtime.day_open_equity - info.equity).max(Decimal::ZERO) / runtime.day_open_equity
                     * dec!(100)
             } else {
                 Decimal::ZERO
@@ -1465,7 +1469,15 @@ fn process_live_bar(
                 );
                 // Write GUI state and return early — no pyramid adds when halted.
                 if let Some(path) = gui_state_path {
-                    write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol, recent_bars, equity_history);
+                    write_gui_state(
+                        path,
+                        &info,
+                        &runtime,
+                        &regime_signal,
+                        &ctx.symbol,
+                        recent_bars,
+                        equity_history,
+                    );
                 }
                 return;
             }
@@ -1505,7 +1517,12 @@ fn process_live_bar(
                     Some(s) => s,
                     None => continue,
                 };
-                let layer = create_pyramid_layer(&runtime.pyramid_config.clone(), state, bar.close, bar.timestamp);
+                let layer = create_pyramid_layer(
+                    &runtime.pyramid_config.clone(),
+                    state,
+                    bar.close,
+                    bar.timestamp,
+                );
                 let order = OrderRequest {
                     symbol: ctx.symbol.clone(),
                     direction: pos.signal.direction,
@@ -1531,7 +1548,15 @@ fn process_live_bar(
     // Phase G: Write GUI state snapshot file if configured.
     if let Some(path) = gui_state_path {
         if let Ok(info) = client.account_info() {
-            write_gui_state(path, &info, &runtime, &regime_signal, &ctx.symbol, recent_bars, equity_history);
+            write_gui_state(
+                path,
+                &info,
+                &runtime,
+                &regime_signal,
+                &ctx.symbol,
+                recent_bars,
+                equity_history,
+            );
         }
     }
 }
@@ -2086,10 +2111,7 @@ fn challenge_rules_for(firm: &FirmConfigFile) -> ChallengeRules {
         } else {
             ChallengeRules::ftmo_1step()
         }
-    } else if name.contains("alpha capital")
-        || name.contains("alpha one")
-        || ctype == "alpha_one"
-    {
+    } else if name.contains("alpha capital") || name.contains("alpha one") || ctype == "alpha_one" {
         ChallengeRules::alpha_one()
     } else if name.contains("fundingpips") && (name.contains("zero") || ctype == "fundingpips_zero")
     {
@@ -2098,10 +2120,7 @@ fn challenge_rules_for(firm: &FirmConfigFile) -> ChallengeRules {
         && (name.contains("1-step") || name.contains("1 step") || ctype == "fundingpips_1step")
     {
         ChallengeRules::fundingpips_1step()
-    } else if name.contains("the5ers")
-        || name.contains("hyper growth")
-        || ctype == "hyper_growth"
-    {
+    } else if name.contains("the5ers") || name.contains("hyper growth") || ctype == "hyper_growth" {
         ChallengeRules::the5ers_hyper_growth()
     } else if name.contains("blue guardian") || ctype == "instant" {
         ChallengeRules::blue_guardian_instant()

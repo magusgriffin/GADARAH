@@ -159,7 +159,10 @@ pub fn load_trades(conn: &Connection, account_id: i64) -> Result<Vec<TradeRecord
 }
 
 /// Load unclosed (open) trades for an account — used for crash recovery.
-pub fn load_unclosed_trades(conn: &Connection, account_id: i64) -> Result<Vec<TradeRecord>, DataError> {
+pub fn load_unclosed_trades(
+    conn: &Connection,
+    account_id: i64,
+) -> Result<Vec<TradeRecord>, DataError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, account_id, symbol, direction, head, regime, session,
          entry_price, sl_price, tp_price, lots, risk_pct, pyramid_level,

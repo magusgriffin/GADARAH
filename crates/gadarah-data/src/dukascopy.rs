@@ -20,8 +20,8 @@ use std::io::Cursor;
 use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
-use rust_decimal::Decimal;
 use rusqlite::Connection;
+use rust_decimal::Decimal;
 use tracing::{debug, info, warn};
 
 use gadarah_core::{Bar, Timeframe};
@@ -247,12 +247,7 @@ pub fn stream_and_insert(
             }
 
             report.days_fetched += 1;
-            info!(
-                "{} {} — {} M1 bars",
-                config.symbol,
-                date,
-                day_m1.len()
-            );
+            info!("{} {} — {} M1 bars", config.symbol, date, day_m1.len());
         }
 
         date = match date.succ_opt() {

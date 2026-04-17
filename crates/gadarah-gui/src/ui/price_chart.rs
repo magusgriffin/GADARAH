@@ -60,7 +60,12 @@ impl PriceChartPanel {
 
         if bars.is_empty() {
             theme::card().show(ui, |ui| {
-                theme::empty_state(ui, "🕯", "No Price Data", "Connect to a broker or use --state-file to stream live candles from the CLI.");
+                theme::empty_state(
+                    ui,
+                    "🕯",
+                    "No Price Data",
+                    "Connect to a broker or use --state-file to stream live candles from the CLI.",
+                );
             });
             return;
         }
@@ -92,14 +97,17 @@ impl PriceChartPanel {
                     ui.add_space(12.0);
                     let sign = if change >= 0.0 { "+" } else { "" };
                     ui.label(
-                        RichText::new(format!("{}{:.5} ({}{:.2}%)", sign, change, sign, change_pct))
-                            .size(13.0)
-                            .color(if change >= 0.0 {
-                                theme::GREEN
-                            } else {
-                                theme::RED
-                            })
-                            .monospace(),
+                        RichText::new(format!(
+                            "{}{:.5} ({}{:.2}%)",
+                            sign, change, sign, change_pct
+                        ))
+                        .size(13.0)
+                        .color(if change >= 0.0 {
+                            theme::GREEN
+                        } else {
+                            theme::RED
+                        })
+                        .monospace(),
                     );
                     ui.add_space(20.0);
                     for (label, val) in [
@@ -160,11 +168,8 @@ impl PriceChartPanel {
                         .map(|c| c.to_box_elem())
                         .collect();
                     if !bear_candles.is_empty() {
-                        plot_ui.box_plot(
-                            BoxPlot::new(bear_candles)
-                                .name("Bearish")
-                                .color(theme::RED),
-                        );
+                        plot_ui
+                            .box_plot(BoxPlot::new(bear_candles).name("Bearish").color(theme::RED));
                     }
 
                     // SL/TP lines from open positions
@@ -283,7 +288,10 @@ impl PriceChartPanel {
         // Price summary card
         if bars.len() >= 2 {
             theme::card_sm().show(ui, |ui| {
-                let highs: f64 = bars.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
+                let highs: f64 = bars
+                    .iter()
+                    .map(|b| b.high)
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let lows: f64 = bars.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
                 let avg_vol: f64 =
                     bars.iter().map(|b| b.volume as f64).sum::<f64>() / bars.len() as f64;
@@ -296,15 +304,10 @@ impl PriceChartPanel {
                         ("Period Low", format!("{:.5}", lows)),
                         ("Range", format!("{:.5}", highs - lows)),
                         ("Avg Volume", format!("{:.0}", avg_vol)),
-                        (
-                            "Bull/Bear",
-                            format!("{}/{}", bullish_count, bear_count),
-                        ),
+                        ("Bull/Bear", format!("{}/{}", bullish_count, bear_count)),
                     ] {
                         ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(label).size(10.5).color(theme::MUTED).strong(),
-                            );
+                            ui.label(RichText::new(label).size(10.5).color(theme::MUTED).strong());
                             ui.label(
                                 RichText::new(value)
                                     .size(13.0)
@@ -380,7 +383,9 @@ fn build_volume_bars(bars: &[PriceBar]) -> Vec<egui_plot::Bar> {
             } else {
                 egui::Color32::from_rgba_premultiplied(245, 78, 70, 120)
             };
-            egui_plot::Bar::new(i as f64, b.volume as f64).fill(color).width(0.6)
+            egui_plot::Bar::new(i as f64, b.volume as f64)
+                .fill(color)
+                .width(0.6)
         })
         .collect()
 }

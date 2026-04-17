@@ -43,8 +43,16 @@ impl RSI {
         let change = close - prev;
         self.prev_close = Some(close);
 
-        let gain = if change > Decimal::ZERO { change } else { Decimal::ZERO };
-        let loss = if change < Decimal::ZERO { -change } else { Decimal::ZERO };
+        let gain = if change > Decimal::ZERO {
+            change
+        } else {
+            Decimal::ZERO
+        };
+        let loss = if change < Decimal::ZERO {
+            -change
+        } else {
+            Decimal::ZERO
+        };
 
         if self.avg_gain.is_none() {
             // Seeding phase: accumulate gains/losses for initial SMA
@@ -112,10 +120,13 @@ mod tests {
         assert!(rsi.update(dec!(100)).is_none());
         assert!(rsi.update(dec!(102)).is_none()); // +2
         assert!(rsi.update(dec!(101)).is_none()); // -1
-        let v = rsi.update(dec!(103));             // +2 → count==3, seed
+        let v = rsi.update(dec!(103)); // +2 → count==3, seed
         assert!(v.is_some());
         let rsi_val = v.unwrap();
-        assert!(rsi_val > dec!(50), "RSI should be >50 with more gains than losses");
+        assert!(
+            rsi_val > dec!(50),
+            "RSI should be >50 with more gains than losses"
+        );
     }
 
     #[test]

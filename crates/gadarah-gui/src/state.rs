@@ -152,36 +152,36 @@ pub struct SharedState {
     pub total_pnl: Decimal,
     pub total_pnl_pct: Decimal,
     pub starting_balance: Decimal,
-    
+
     // Positions
     pub positions: Vec<Position>,
-    
+
     // Regime tracking per symbol
     pub regime_by_symbol: std::collections::HashMap<String, RegimeSignal9>,
     pub active_heads: Vec<HeadId>,
-    
+
     // Kill switch
     pub kill_switch_active: bool,
     pub kill_switch_reason: Option<String>,
     pub kill_switch_cooldown: Option<i64>,
-    
+
     // Configuration
     pub config: GadarahConfig,
     pub selected_firm: Option<String>,
     pub firm_config: Option<FirmConfig>,
     pub available_firms: Vec<String>,
-    
+
     // Connection
     pub connection_status: ConnectionStatus,
-    
+
     // Logs
     pub logs: VecDeque<LogEntry>,
     pub log_filter: LogLevel,
-    
+
     // Backtest
     pub last_backtest: Option<BacktestResult>,
     pub backtest_running: bool,
-    
+
     // Performance history
     pub equity_curve: Vec<EquityPoint>,
     pub trade_history: Vec<TradeRecord>,
@@ -254,7 +254,7 @@ impl SharedState {
             self.logs.pop_front();
         }
     }
-    
+
     /// Get filtered logs
     pub fn get_filtered_logs(&self) -> Vec<&LogEntry> {
         self.logs
@@ -262,7 +262,7 @@ impl SharedState {
             .filter(|l| l.level as u8 >= self.log_filter as u8)
             .collect()
     }
-    
+
     /// Update equity curve point
     pub fn add_equity_point(&mut self, timestamp: i64, equity: Decimal) {
         self.equity_curve.push(EquityPoint {
@@ -274,7 +274,7 @@ impl SharedState {
             self.equity_curve.remove(0);
         }
     }
-    
+
     /// Add a price bar, keeping the buffer bounded
     pub fn add_price_bar(&mut self, bar: PriceBar) {
         self.price_bars.push(bar);
@@ -288,27 +288,39 @@ impl SharedState {
         if self.trade_history.is_empty() {
             return;
         }
-        
+
         self.total_trades = self.trade_history.len() as u32;
-        
-        let wins: u32 = self.trade_history.iter().filter(|t| t.pnl > Decimal::ZERO).count() as u32;
-        let _losses: u32 = self.trade_history.iter().filter(|t| t.pnl < Decimal::ZERO).count() as u32;
-        
+
+        let wins: u32 = self
+            .trade_history
+            .iter()
+            .filter(|t| t.pnl > Decimal::ZERO)
+            .count() as u32;
+        let _losses: u32 = self
+            .trade_history
+            .iter()
+            .filter(|t| t.pnl < Decimal::ZERO)
+            .count() as u32;
+
         self.win_rate = if self.total_trades > 0 {
             Decimal::from(wins) / Decimal::from(self.total_trades) * dec!(100)
         } else {
             Decimal::ZERO
         };
-        
-        let total_wins: Decimal = self.trade_history.iter()
+
+        let total_wins: Decimal = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl > Decimal::ZERO)
             .map(|t| t.pnl)
             .sum();
-        let total_losses: Decimal = self.trade_history.iter()
+        let total_losses: Decimal = self
+            .trade_history
+            .iter()
             .filter(|t| t.pnl < Decimal::ZERO)
             .map(|t| t.pnl.abs())
             .sum();
-        
+
         self.profit_factor = if total_losses > Decimal::ZERO {
             total_wins / total_losses
         } else if total_wins > Decimal::ZERO {
@@ -316,32 +328,34 @@ impl SharedState {
         } else {
             Decimal::ZERO
         };
-        
+
         // Calculate expectancy in R
         let avg_r: Decimal = if !self.trade_history.is_empty() {
-            self.trade_history.iter()
+            self.trade_history
+                .iter()
                 .map(|t| t.r_multiple)
-                .sum::<Decimal>() / Decimal::from(self.total_trades)
+                .sum::<Decimal>()
+                / Decimal::from(self.total_trades)
         } else {
             Decimal::ZERO
         };
         self.expectancy_r = avg_r;
-        
+
         // Calculate max drawdown
         self.max_drawdown_pct = self.calculate_max_drawdown();
-        
+
         // Sharpe (simplified)
         self.sharpe_ratio = self.calculate_sharpe();
     }
-    
+
     fn calculate_max_drawdown(&self) -> Decimal {
         if self.equity_curve.is_empty() {
             return Decimal::ZERO;
         }
-        
+
         let mut peak = self.equity_curve[0].equity;
         let mut max_dd = Decimal::ZERO;
-        
+
         for point in &self.equity_curve {
             if point.equity > peak {
                 peak = point.equity;
@@ -351,36 +365,42 @@ impl SharedState {
                 max_dd = dd;
             }
         }
-        
+
         max_dd
     }
-    
+
     fn calculate_sharpe(&self) -> Decimal {
         if self.equity_curve.len() < 2 {
             return Decimal::ZERO;
         }
-        
-        let returns: Vec<f64> = self.equity_curve.windows(2)
+
+        let returns: Vec<f64> = self
+            .equity_curve
+            .windows(2)
             .filter_map(|w| {
                 let prev = w[0].equity.to_string().parse::<f64>().ok()?;
                 let curr = w[1].equity.to_string().parse::<f64>().ok()?;
-                if prev == 0.0 { None } else { Some((curr - prev) / prev) }
+                if prev == 0.0 {
+                    None
+                } else {
+                    Some((curr - prev) / prev)
+                }
             })
             .collect();
-        
+
         if returns.is_empty() {
             return Decimal::ZERO;
         }
-        
+
         let n = returns.len() as f64;
         let mean: f64 = returns.iter().sum::<f64>() / n;
         let variance: f64 = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
         let std_dev = variance.sqrt();
-        
+
         if std_dev == 0.0 {
             return Decimal::ZERO;
         }
-        
+
         // Annualized Sharpe (assuming daily data)
         let sharpe = (mean / std_dev) * 252.0_f64.sqrt();
         // Convert to Decimal

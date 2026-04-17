@@ -128,11 +128,7 @@ impl Regime9 {
                 HeadId::Trend,
                 HeadId::VolProfile,
             ],
-            Self::RangingTight => &[
-                HeadId::AsianRange,
-                HeadId::Grid,
-                HeadId::VolProfile,
-            ],
+            Self::RangingTight => &[HeadId::AsianRange, HeadId::Grid, HeadId::VolProfile],
             Self::RangingWide => &[
                 HeadId::AsianRange,
                 HeadId::Breakout,

@@ -18,10 +18,10 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::heads::Head;
-use crate::indicators::{RSI, ATR, VWAP};
+use crate::indicators::{ATR, RSI, VWAP};
 use crate::types::{
-    Bar, Direction, HeadId, RegimeSignal9, Session, SessionProfile, SignalKind, TradeSignal,
-    Timeframe,
+    Bar, Direction, HeadId, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 #[derive(Debug, Clone)]
@@ -297,11 +297,7 @@ mod tests {
         let sess = SessionProfile::from_utc_hour(9); // London, not Overlap
         let reg = regime_any();
         for i in 0..30 {
-            let sigs = head.evaluate(
-                &m1_bar(9 * 3600 + i * 60, dec!(1.1000)),
-                &sess,
-                &reg,
-            );
+            let sigs = head.evaluate(&m1_bar(9 * 3600 + i * 60, dec!(1.1000)), &sess, &reg);
             assert!(sigs.is_empty());
         }
     }

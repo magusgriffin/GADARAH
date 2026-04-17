@@ -26,8 +26,8 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::ATR;
 use crate::types::{
-    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind,
-    TradeSignal, Timeframe,
+    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 const BUCKETS: usize = 100;
@@ -157,8 +157,16 @@ impl VolProfileHead {
             if !can_expand_down && !can_expand_up {
                 break;
             }
-            let down_vol = if can_expand_down { buckets[va_low - 1] } else { 0 };
-            let up_vol = if can_expand_up { buckets[va_high + 1] } else { 0 };
+            let down_vol = if can_expand_down {
+                buckets[va_low - 1]
+            } else {
+                0
+            };
+            let up_vol = if can_expand_up {
+                buckets[va_high + 1]
+            } else {
+                0
+            };
             if up_vol >= down_vol && can_expand_up {
                 va_high += 1;
                 va_vol += buckets[va_high];
@@ -171,9 +179,8 @@ impl VolProfileHead {
             }
         }
 
-        let bucket_to_price = |idx: usize| -> Decimal {
-            price_min + bucket_size * Decimal::from(idx)
-        };
+        let bucket_to_price =
+            |idx: usize| -> Decimal { price_min + bucket_size * Decimal::from(idx) };
 
         Some(ProfileLevels {
             poc: bucket_to_price(poc_idx) + bucket_size / dec!(2),

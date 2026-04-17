@@ -15,8 +15,8 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::{BBWidthPercentile, BollingerBands, ATR, EMA};
 use crate::types::{
-    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind,
-    TradeSignal, Timeframe,
+    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 #[derive(Debug, Clone)]
@@ -115,9 +115,7 @@ impl Head for GridHead {
         let centre = self.ema.update(bar.close);
         let atr_val = self.atr.update(bar);
         let bb_vals = self.bb.update(bar.close);
-        let bb_p = bb_vals
-            .as_ref()
-            .map(|v| self.bb_pctile.update(v.width));
+        let bb_p = bb_vals.as_ref().map(|v| self.bb_pctile.update(v.width));
 
         self.recent_closes.push_back(bar.close);
         if self.recent_closes.len() > 4 {

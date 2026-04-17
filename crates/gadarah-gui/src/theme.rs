@@ -3,75 +3,75 @@
 use eframe::egui::{self, Color32, CornerRadius, Margin, Stroke};
 
 // ── Palette ───────────────────────────────────────────────────────────────────
-pub const BG:         Color32 = Color32::from_rgb(8,   12,  18);
-pub const CARD:       Color32 = Color32::from_rgb(16,  21,  30);
-pub const CARD2:      Color32 = Color32::from_rgb(22,  28,  38);
-pub const BORDER:     Color32 = Color32::from_rgb(38,  46,  56);
-pub const ACCENT:     Color32 = Color32::from_rgb(0,   210, 160);
-pub const ACCENT_DIM: Color32 = Color32::from_rgb(0,   80,  60);
-pub const TEXT:       Color32 = Color32::from_rgb(230, 237, 244);
-pub const MUTED:      Color32 = Color32::from_rgb(120, 132, 148);
-pub const DIM:        Color32 = Color32::from_rgb(55,  65,  78);
-pub const GREEN:      Color32 = Color32::from_rgb(46,  196, 82);
-pub const RED:        Color32 = Color32::from_rgb(248, 68,  58);
-pub const YELLOW:     Color32 = Color32::from_rgb(220, 170, 30);
-pub const ORANGE:     Color32 = Color32::from_rgb(230, 118, 35);
-pub const BLUE:       Color32 = Color32::from_rgb(70,  155, 255);
-pub const INPUT_BG:   Color32 = Color32::from_rgb(5,   8,   14);
-pub const GOLD:       Color32 = Color32::from_rgb(255, 195, 0);
+pub const BG: Color32 = Color32::from_rgb(8, 12, 18);
+pub const CARD: Color32 = Color32::from_rgb(16, 21, 30);
+pub const CARD2: Color32 = Color32::from_rgb(22, 28, 38);
+pub const BORDER: Color32 = Color32::from_rgb(38, 46, 56);
+pub const ACCENT: Color32 = Color32::from_rgb(0, 210, 160);
+pub const ACCENT_DIM: Color32 = Color32::from_rgb(0, 80, 60);
+pub const TEXT: Color32 = Color32::from_rgb(230, 237, 244);
+pub const MUTED: Color32 = Color32::from_rgb(120, 132, 148);
+pub const DIM: Color32 = Color32::from_rgb(55, 65, 78);
+pub const GREEN: Color32 = Color32::from_rgb(46, 196, 82);
+pub const RED: Color32 = Color32::from_rgb(248, 68, 58);
+pub const YELLOW: Color32 = Color32::from_rgb(220, 170, 30);
+pub const ORANGE: Color32 = Color32::from_rgb(230, 118, 35);
+pub const BLUE: Color32 = Color32::from_rgb(70, 155, 255);
+pub const INPUT_BG: Color32 = Color32::from_rgb(5, 8, 14);
+pub const GOLD: Color32 = Color32::from_rgb(255, 195, 0);
 
 // ── Initialise ────────────────────────────────────────────────────────────────
 pub fn setup(ctx: &egui::Context) {
     let cr8 = CornerRadius::same(8);
 
     let mut v = egui::Visuals::dark();
-    v.panel_fill        = BG;
-    v.window_fill       = CARD;
-    v.window_stroke     = Stroke::new(1.0, BORDER);
-    v.popup_shadow      = egui::Shadow::NONE;
-    v.window_shadow     = egui::Shadow::NONE;
-    v.extreme_bg_color  = INPUT_BG;
-    v.faint_bg_color    = Color32::from_rgb(12, 17, 24);
-    v.warn_fg_color     = YELLOW;
-    v.error_fg_color    = RED;
-    v.hyperlink_color   = ACCENT;
+    v.panel_fill = BG;
+    v.window_fill = CARD;
+    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.popup_shadow = egui::Shadow::NONE;
+    v.window_shadow = egui::Shadow::NONE;
+    v.extreme_bg_color = INPUT_BG;
+    v.faint_bg_color = Color32::from_rgb(12, 17, 24);
+    v.warn_fg_color = YELLOW;
+    v.error_fg_color = RED;
+    v.hyperlink_color = ACCENT;
     v.selection.bg_fill = Color32::from_rgb(0, 100, 75);
 
     {
         let w = &mut v.widgets.noninteractive;
-        w.bg_fill      = CARD;
+        w.bg_fill = CARD;
         w.weak_bg_fill = BG;
-        w.fg_stroke    = Stroke::new(1.0, MUTED);
-        w.bg_stroke    = Stroke::new(1.0, BORDER);
+        w.fg_stroke = Stroke::new(1.0, MUTED);
+        w.bg_stroke = Stroke::new(1.0, BORDER);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.inactive;
-        w.bg_fill      = Color32::from_rgb(24, 30, 40);
+        w.bg_fill = Color32::from_rgb(24, 30, 40);
         w.weak_bg_fill = CARD;
-        w.fg_stroke    = Stroke::new(1.0, MUTED);
-        w.bg_stroke    = Stroke::new(1.0, BORDER);
+        w.fg_stroke = Stroke::new(1.0, MUTED);
+        w.bg_stroke = Stroke::new(1.0, BORDER);
         w.corner_radius = cr8;
-        w.expansion    = 0.0;
+        w.expansion = 0.0;
     }
     {
         let w = &mut v.widgets.hovered;
-        w.bg_fill      = Color32::from_rgb(30, 38, 50);
+        w.bg_fill = Color32::from_rgb(30, 38, 50);
         w.weak_bg_fill = Color32::from_rgb(24, 32, 42);
-        w.fg_stroke    = Stroke::new(1.0, TEXT);
-        w.bg_stroke    = Stroke::new(1.0, ACCENT);
+        w.fg_stroke = Stroke::new(1.0, TEXT);
+        w.bg_stroke = Stroke::new(1.0, ACCENT);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.active;
-        w.bg_fill      = ACCENT_DIM;
+        w.bg_fill = ACCENT_DIM;
         w.weak_bg_fill = ACCENT_DIM;
-        w.fg_stroke    = Stroke::new(1.0, Color32::WHITE);
+        w.fg_stroke = Stroke::new(1.0, Color32::WHITE);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.open;
-        w.bg_fill   = Color32::from_rgb(24, 30, 40);
+        w.bg_fill = Color32::from_rgb(24, 30, 40);
         w.bg_stroke = Stroke::new(1.0, ACCENT);
         w.corner_radius = cr8;
     }
@@ -80,13 +80,14 @@ pub fn setup(ctx: &egui::Context) {
 
     let mut s = (*ctx.style()).clone();
     s.text_styles = [
-        (egui::TextStyle::Small,     egui::FontId::proportional(11.0)),
-        (egui::TextStyle::Body,      egui::FontId::proportional(13.5)),
-        (egui::TextStyle::Button,    egui::FontId::proportional(13.5)),
-        (egui::TextStyle::Heading,   egui::FontId::proportional(20.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(11.0)),
+        (egui::TextStyle::Body, egui::FontId::proportional(13.5)),
+        (egui::TextStyle::Button, egui::FontId::proportional(13.5)),
+        (egui::TextStyle::Heading, egui::FontId::proportional(20.0)),
         (egui::TextStyle::Monospace, egui::FontId::monospace(13.0)),
-    ].into();
-    s.spacing.item_spacing   = egui::vec2(8.0, 6.0);
+    ]
+    .into();
+    s.spacing.item_spacing = egui::vec2(8.0, 6.0);
     s.spacing.button_padding = egui::vec2(12.0, 7.0);
     s.spacing.scroll.bar_width = 4.0;
     ctx.set_style(s);
@@ -155,7 +156,11 @@ pub fn heading(ui: &mut egui::Ui, text: &str) {
 
 /// Green if non-negative, red otherwise
 pub fn pnl_color(non_negative: bool) -> Color32 {
-    if non_negative { GREEN } else { RED }
+    if non_negative {
+        GREEN
+    } else {
+        RED
+    }
 }
 
 /// Coloured pill/badge
@@ -164,7 +169,12 @@ pub fn pill(ui: &mut egui::Ui, text: &str, bg: Color32, fg: Color32) {
         .fill(bg)
         .stroke(Stroke::new(1.0, fg.linear_multiply(0.6)))
         .corner_radius(12u8)
-        .inner_margin(Margin { left: 10, right: 10, top: 4, bottom: 4 })
+        .inner_margin(Margin {
+            left: 10,
+            right: 10,
+            top: 4,
+            bottom: 4,
+        })
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).color(fg).size(11.0).strong());
         });
@@ -173,14 +183,30 @@ pub fn pill(ui: &mut egui::Ui, text: &str, bg: Color32, fg: Color32) {
 /// Risk progress bar: label | [====   ] used% / limit%
 pub fn dd_bar(ui: &mut egui::Ui, label: &str, used_pct: f32, limit_pct: f32) {
     let ratio = (used_pct / limit_pct).clamp(0.0, 1.0);
-    let color = if ratio < 0.55 { GREEN } else if ratio < 0.80 { YELLOW } else { RED };
-    let warn = if ratio >= 1.0 { "  LIMIT HIT" } else if ratio >= 0.80 { "  WARNING" } else { "" };
+    let color = if ratio < 0.55 {
+        GREEN
+    } else if ratio < 0.80 {
+        YELLOW
+    } else {
+        RED
+    };
+    let warn = if ratio >= 1.0 {
+        "  LIMIT HIT"
+    } else if ratio >= 0.80 {
+        "  WARNING"
+    } else {
+        ""
+    };
     ui.horizontal(|ui| {
         ui.add_sized(
             [120.0, 18.0],
             egui::Label::new(egui::RichText::new(label).color(MUTED).size(11.5)),
         );
-        ui.add(egui::ProgressBar::new(ratio).desired_width(140.0).fill(color));
+        ui.add(
+            egui::ProgressBar::new(ratio)
+                .desired_width(140.0)
+                .fill(color),
+        );
         ui.label(
             egui::RichText::new(format!("{:.1}% / {:.0}%{}", used_pct, limit_pct, warn))
                 .color(color)
@@ -193,7 +219,13 @@ pub fn dd_bar(ui: &mut egui::Ui, label: &str, used_pct: f32, limit_pct: f32) {
 /// Large value + small sub-label
 pub fn big_stat(ui: &mut egui::Ui, value: &str, sublabel: &str, color: Color32) {
     ui.vertical(|ui| {
-        ui.label(egui::RichText::new(value).size(24.0).color(color).strong().monospace());
+        ui.label(
+            egui::RichText::new(value)
+                .size(24.0)
+                .color(color)
+                .strong()
+                .monospace(),
+        );
         ui.add_space(2.0);
         ui.label(egui::RichText::new(sublabel).size(11.0).color(MUTED));
     });
@@ -218,6 +250,12 @@ pub fn stat_card(ui: &mut egui::Ui, label: &str, value: &str, color: Color32, wi
         ui.set_width(width);
         section_label(ui, label);
         ui.add_space(6.0);
-        ui.label(egui::RichText::new(value).size(20.0).color(color).strong().monospace());
+        ui.label(
+            egui::RichText::new(value)
+                .size(20.0)
+                .color(color)
+                .strong()
+                .monospace(),
+        );
     });
 }

@@ -113,7 +113,11 @@ pub fn find_robust_params(results: &[TuneResult]) -> StressConfig {
         if !r.pass {
             tracing::debug!(
                 "FAIL: loss_mult={} wr_red={} slip={} pf={:.2} dd={:.2}%",
-                r.loss_mult, r.wr_reduction, r.slippage, r.stressed_pf, r.stressed_dd
+                r.loss_mult,
+                r.wr_reduction,
+                r.slippage,
+                r.stressed_pf,
+                r.stressed_dd
             );
         }
     }

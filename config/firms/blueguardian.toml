@@ -1,3 +1,6 @@
+# Legacy research profile only.
+# Blue Guardian no longer offers cTrader to new accounts, and U.S. clients are
+# restricted to Match Trader / TradeLocker. Not a valid U.S. cTrader target.
 [firm]
 name = "Blue Guardian"
 challenge_type = "instant"

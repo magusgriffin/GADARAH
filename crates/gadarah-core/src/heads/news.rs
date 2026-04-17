@@ -21,8 +21,8 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::{ATR, EMA};
 use crate::types::{
-    Bar, Direction, HeadId, RegimeSignal9, Session, SessionProfile, SignalKind, TradeSignal,
-    Timeframe,
+    Bar, Direction, HeadId, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 #[derive(Debug, Clone)]
@@ -282,9 +282,9 @@ mod tests {
         let spike = Bar {
             timestamp: 20 * 900,
             open: dec!(1.1000),
-            high: dec!(1.1100),   // +0.0100
-            low: dec!(1.0900),    // total range = 0.0200
-            close: dec!(1.1050),  // closes above midpoint → BUY
+            high: dec!(1.1100),  // +0.0100
+            low: dec!(1.0900),   // total range = 0.0200
+            close: dec!(1.1050), // closes above midpoint → BUY
             volume: 5000,
             timeframe: Timeframe::M15,
         };

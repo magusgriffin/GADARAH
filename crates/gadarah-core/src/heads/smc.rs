@@ -26,8 +26,8 @@ use rust_decimal_macros::dec;
 use crate::heads::Head;
 use crate::indicators::{ATR, EMA};
 use crate::types::{
-    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind,
-    TradeSignal, Timeframe,
+    Bar, Direction, HeadId, Regime9, RegimeSignal9, Session, SessionProfile, SignalKind, Timeframe,
+    TradeSignal,
 };
 
 const HISTORY: usize = 50;
@@ -65,15 +65,15 @@ impl Default for SmcConfig {
 struct OrderBlock {
     high: Decimal,
     low: Decimal,
-    direction: Direction, // direction of the impulse AFTER this OB
+    direction: Direction,  // direction of the impulse AFTER this OB
     swing_target: Decimal, // approximate TP (swing high/low of impulse)
 }
 
 /// A detected fair value gap.
 #[derive(Debug, Clone)]
 struct Fvg {
-    top: Decimal,    // upper edge of gap
-    bottom: Decimal, // lower edge of gap
+    top: Decimal,         // upper edge of gap
+    bottom: Decimal,      // lower edge of gap
     direction: Direction, // direction for continuation (bullish FVG → buy)
 }
 
@@ -211,10 +211,7 @@ impl SmcHead {
             match ob.direction {
                 Direction::Buy => {
                     // Price returns into OB zone from above; bar closes bullish
-                    if bar.low <= ob.high
-                        && bar.close > ob.low
-                        && bar.close > bar.open
-                    {
+                    if bar.low <= ob.high && bar.close > ob.low && bar.close > bar.open {
                         let entry = bar.close;
                         let sl = ob.low - atr * self.config.sl_atr_mult;
                         let risk = entry - sl;
@@ -239,10 +236,7 @@ impl SmcHead {
                     }
                 }
                 Direction::Sell => {
-                    if bar.high >= ob.low
-                        && bar.close < ob.high
-                        && bar.close < bar.open
-                    {
+                    if bar.high >= ob.low && bar.close < ob.high && bar.close < bar.open {
                         let entry = bar.close;
                         let sl = ob.high + atr * self.config.sl_atr_mult;
                         let risk = sl - entry;
@@ -282,9 +276,8 @@ impl SmcHead {
             match fvg.direction {
                 Direction::Buy => {
                     // Price drops into FVG (bullish), then closes up
-                    if bar.low <= fvg.top
-                        && bar.low >= fvg.bottom
-                        && bar.close > fvg.top // closes back above gap top
+                    if bar.low <= fvg.top && bar.low >= fvg.bottom && bar.close > fvg.top
+                    // closes back above gap top
                     {
                         let entry = bar.close;
                         let sl = fvg.bottom - atr * self.config.sl_atr_mult;
@@ -309,10 +302,7 @@ impl SmcHead {
                     }
                 }
                 Direction::Sell => {
-                    if bar.high >= fvg.bottom
-                        && bar.high <= fvg.top
-                        && bar.close < fvg.bottom
-                    {
+                    if bar.high >= fvg.bottom && bar.high <= fvg.top && bar.close < fvg.bottom {
                         let entry = bar.close;
                         let sl = fvg.top + atr * self.config.sl_atr_mult;
                         let risk = sl - entry;

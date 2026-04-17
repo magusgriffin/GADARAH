@@ -1,11 +1,11 @@
 pub mod aggregator;
-pub mod dukascopy;
 pub mod audit;
 pub mod csv_import;
 pub mod dataset;
 pub mod dataset_pipeline;
 pub mod db;
 pub mod downloader;
+pub mod dukascopy;
 pub mod error;
 pub mod gap_filler;
 pub mod schema;
@@ -24,11 +24,10 @@ pub use dataset::{
 };
 pub use dataset_pipeline::{run_pipeline, PipelineConfig, PipelineReport, SeriesPipelineResult};
 pub use db::Database;
-pub use gap_filler::{detect_gaps, fill_gaps, GapFillReport, GapRange};
-pub use volume_processor::{process_volumes, VolumeProcessStats};
 pub use downloader::{quick_download, DataDownloader, DataSource, DownloadConfig};
 pub use dukascopy::{point_factor, stream_and_insert, FetchConfig, FetchReport};
 pub use error::DataError;
+pub use gap_filler::{detect_gaps, fill_gaps, GapFillReport, GapRange};
 pub use store::{
     bar_time_range, count_bars, delete_bars, insert_bar, insert_bars, list_symbols,
     list_timeframes, load_all_bars, load_bars, str_to_tf,
@@ -38,3 +37,4 @@ pub use trades::{
     load_trades, load_unclosed_trade_count, load_unclosed_trades, EquitySnapshot, TradeClose,
     TradeRecord,
 };
+pub use volume_processor::{process_volumes, VolumeProcessStats};
