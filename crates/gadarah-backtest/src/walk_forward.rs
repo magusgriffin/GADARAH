@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -15,18 +17,32 @@ use crate::stats::BacktestStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalkForwardConfig {
-    /// Number of folds (e.g. 5 for 5-fold).
+    /// Number of folds (e.g. 12 for 12-fold).
     pub num_folds: usize,
     /// Fraction of each fold used for in-sample (the rest is out-of-sample).
     /// E.g. 0.70 means 70% in-sample, 30% out-of-sample.
     pub in_sample_ratio: f64,
+    /// Number of bars skipped between the in-sample and out-of-sample window.
+    ///
+    /// Defaults to one-week at M5 (7 * 24 * 12 = 2016 bars).  A non-zero
+    /// embargo prevents overlapping signal state — a feature computed at the
+    /// end of IS cannot bleed into the start of OOS, which is what makes
+    /// walk-forward results honest on bar-by-bar strategies.
+    pub embargo_bars: usize,
+    /// Minimum OOS Sharpe a fold must hit to count as "passing".
+    pub min_fold_sharpe: Decimal,
+    /// Maximum IS→OOS degradation (as pct of IS profit factor) allowed.
+    pub max_oos_degradation_pct: Decimal,
 }
 
 impl Default for WalkForwardConfig {
     fn default() -> Self {
         Self {
-            num_folds: 5,
+            num_folds: 12,
             in_sample_ratio: 0.70,
+            embargo_bars: 7 * 24 * 12, // 1 week of M5
+            min_fold_sharpe: dec!(0.5),
+            max_oos_degradation_pct: dec!(40),
         }
     }
 }
@@ -65,6 +81,69 @@ pub struct EngineWalkForwardResult {
     pub passed: bool,
 }
 
+/// One (in-sample, out-of-sample) split produced by walking the bar buffer.
+/// Embargo skips bars between IS and OOS so indicator state doesn't leak across
+/// the boundary (Lopez de Prado §7.4.2 "purging with embargo").
+struct FoldRanges {
+    fold_index: usize,
+    in_sample: Range<usize>,
+    out_of_sample: Range<usize>,
+}
+
+fn compute_fold_ranges(
+    total_bars: usize,
+    wf: &WalkForwardConfig,
+) -> Result<Vec<FoldRanges>, BacktestError> {
+    if wf.num_folds < 2 {
+        return Err(BacktestError::WalkForward(
+            "need at least 2 folds".to_string(),
+        ));
+    }
+    let fold_size = total_bars / wf.num_folds;
+    if fold_size < 200 {
+        return Err(BacktestError::InsufficientBars {
+            needed: 200 * wf.num_folds,
+            got: total_bars,
+        });
+    }
+    let is_size = (fold_size as f64 * wf.in_sample_ratio) as usize;
+    if is_size <= wf.embargo_bars {
+        return Err(BacktestError::WalkForward(format!(
+            "embargo ({}) exceeds in-sample size ({}); reduce embargo or grow folds",
+            wf.embargo_bars, is_size,
+        )));
+    }
+
+    let mut out = Vec::with_capacity(wf.num_folds);
+    for fold_index in 0..wf.num_folds {
+        let start = fold_index * fold_size;
+        let is_end = start + is_size;
+        let oos_start = is_end + wf.embargo_bars;
+        let oos_end = (start + fold_size).min(total_bars);
+
+        if is_end >= total_bars || oos_start >= total_bars || oos_end > total_bars {
+            break;
+        }
+        if oos_start >= oos_end {
+            break;
+        }
+        out.push(FoldRanges {
+            fold_index,
+            in_sample: start..is_end,
+            out_of_sample: oos_start..oos_end,
+        });
+    }
+    Ok(out)
+}
+
+fn oos_degradation(avg_is_pf: Decimal, combined_oos_pf: Decimal) -> Decimal {
+    if avg_is_pf > Decimal::ZERO {
+        (avg_is_pf - combined_oos_pf) / avg_is_pf * dec!(100)
+    } else {
+        dec!(100)
+    }
+}
+
 /// Run walk-forward validation.
 ///
 /// Splits the bar data into `num_folds` rolling windows. For each fold:
@@ -88,51 +167,25 @@ where
     if bars.is_empty() {
         return Err(BacktestError::NoBars);
     }
-    if wf_config.num_folds < 2 {
-        return Err(BacktestError::WalkForward(
-            "need at least 2 folds".to_string(),
-        ));
-    }
+    let ranges = compute_fold_ranges(bars.len(), wf_config)?;
 
-    let total_bars = bars.len();
-    let fold_size = total_bars / wf_config.num_folds;
-    if fold_size < 200 {
-        return Err(BacktestError::InsufficientBars {
-            needed: 200 * wf_config.num_folds,
-            got: total_bars,
-        });
-    }
-
-    let is_size = (fold_size as f64 * wf_config.in_sample_ratio) as usize;
-    let _oos_size = fold_size - is_size;
-
-    let mut folds = Vec::with_capacity(wf_config.num_folds);
+    let mut folds = Vec::with_capacity(ranges.len());
     let mut all_oos_trades = Vec::new();
 
-    for fold_idx in 0..wf_config.num_folds {
-        let start = fold_idx * fold_size;
-        let is_end = start + is_size;
-        let oos_end = (start + fold_size).min(total_bars);
+    for r in ranges {
+        let is_bars = &bars[r.in_sample.clone()];
+        let oos_bars = &bars[r.out_of_sample.clone()];
 
-        if is_end >= total_bars || oos_end > total_bars {
-            break;
-        }
-
-        let is_bars = &bars[start..is_end];
-        let oos_bars = &bars[is_end..oos_end];
-
-        // In-sample run
         let mut is_heads = head_factory();
         let is_result = run_replay(is_bars, &mut is_heads, replay_config)?;
 
-        // Out-of-sample run with fresh heads
         let mut oos_heads = head_factory();
         let oos_result = run_replay(oos_bars, &mut oos_heads, replay_config)?;
 
         all_oos_trades.extend(oos_result.trades.clone());
 
         folds.push(FoldResult {
-            fold_index: fold_idx,
+            fold_index: r.fold_index,
             in_sample_bars: is_bars.len(),
             out_of_sample_bars: oos_bars.len(),
             in_sample_stats: is_result.stats,
@@ -143,25 +196,24 @@ where
     let combined_oos_stats =
         BacktestStats::compute(&all_oos_trades, replay_config.starting_balance);
 
-    // Compute degradation: avg IS profit factor vs OOS profit factor
-    let avg_is_pf = if !folds.is_empty() {
+    let avg_is_pf = if folds.is_empty() {
+        Decimal::ONE
+    } else {
         folds
             .iter()
             .map(|f| f.in_sample_stats.profit_factor)
             .sum::<Decimal>()
             / Decimal::from(folds.len())
-    } else {
-        Decimal::ONE
     };
+    let oos_degradation_pct = oos_degradation(avg_is_pf, combined_oos_stats.profit_factor);
 
-    let oos_degradation_pct = if avg_is_pf > Decimal::ZERO {
-        (avg_is_pf - combined_oos_stats.profit_factor) / avg_is_pf * dec!(100)
-    } else {
-        dec!(100)
-    };
-
-    // Pass criteria: OOS profit factor > 1.0 and degradation < 40%
-    let passed = combined_oos_stats.profit_factor > Decimal::ONE && oos_degradation_pct < dec!(40);
+    let fold_sharpes_ok = folds
+        .iter()
+        .all(|f| f.out_of_sample_stats.sharpe_ratio >= wf_config.min_fold_sharpe);
+    let passed = !folds.is_empty()
+        && combined_oos_stats.profit_factor > Decimal::ONE
+        && oos_degradation_pct < wf_config.max_oos_degradation_pct
+        && fold_sharpes_ok;
 
     Ok(WalkForwardResult {
         folds,
@@ -183,36 +235,14 @@ where
     if bars.is_empty() {
         return Err(BacktestError::NoBars);
     }
-    if wf_config.num_folds < 2 {
-        return Err(BacktestError::WalkForward(
-            "need at least 2 folds".to_string(),
-        ));
-    }
+    let ranges = compute_fold_ranges(bars.len(), wf_config)?;
 
-    let total_bars = bars.len();
-    let fold_size = total_bars / wf_config.num_folds;
-    if fold_size < 200 {
-        return Err(BacktestError::InsufficientBars {
-            needed: 200 * wf_config.num_folds,
-            got: total_bars,
-        });
-    }
-
-    let is_size = (fold_size as f64 * wf_config.in_sample_ratio) as usize;
-    let mut folds = Vec::with_capacity(wf_config.num_folds);
+    let mut folds = Vec::with_capacity(ranges.len());
     let mut all_oos_trades = Vec::new();
 
-    for fold_idx in 0..wf_config.num_folds {
-        let start = fold_idx * fold_size;
-        let is_end = start + is_size;
-        let oos_end = (start + fold_size).min(total_bars);
-
-        if is_end >= total_bars || oos_end > total_bars {
-            break;
-        }
-
-        let is_bars = &bars[start..is_end];
-        let oos_bars = &bars[is_end..oos_end];
+    for r in ranges {
+        let is_bars = &bars[r.in_sample.clone()];
+        let oos_bars = &bars[r.out_of_sample.clone()];
 
         let mut is_heads = head_factory();
         let is_result = run_engine(is_bars, &mut is_heads, engine_config)?;
@@ -223,7 +253,7 @@ where
         all_oos_trades.extend(oos_result.trades.clone());
 
         folds.push(EngineFoldResult {
-            fold_index: fold_idx,
+            fold_index: r.fold_index,
             in_sample_bars: is_bars.len(),
             out_of_sample_bars: oos_bars.len(),
             in_sample_result: is_result,
@@ -234,21 +264,16 @@ where
     let combined_oos_stats =
         BacktestStats::compute(&all_oos_trades, engine_config.starting_balance);
 
-    let avg_is_pf = if !folds.is_empty() {
+    let avg_is_pf = if folds.is_empty() {
+        Decimal::ONE
+    } else {
         folds
             .iter()
             .map(|f| f.in_sample_result.stats.profit_factor)
             .sum::<Decimal>()
             / Decimal::from(folds.len())
-    } else {
-        Decimal::ONE
     };
-
-    let oos_degradation_pct = if avg_is_pf > Decimal::ZERO {
-        (avg_is_pf - combined_oos_stats.profit_factor) / avg_is_pf * dec!(100)
-    } else {
-        dec!(100)
-    };
+    let oos_degradation_pct = oos_degradation(avg_is_pf, combined_oos_stats.profit_factor);
 
     let passed = !folds.is_empty()
         && folds

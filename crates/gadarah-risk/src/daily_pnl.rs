@@ -3,6 +3,30 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// ProtectiveClose
+// ---------------------------------------------------------------------------
+
+/// Reason for an automatic protective close (flatten-all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtectiveCloseReason {
+    /// Daily stop reached — close everything before it bleeds further.
+    DailyStopReached,
+    /// Kill switch armed — hard stop.
+    KillSwitchArmed,
+    /// Total drawdown exhausted.
+    TotalDdExhausted,
+    /// Broker lost sync; we cannot size new intents safely.
+    BrokerDesynced,
+}
+
+/// Edge-triggered request emitted once when a protection boundary is crossed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectiveClose {
+    pub reason: ProtectiveCloseReason,
+    pub at_timestamp: i64,
+}
+
+// ---------------------------------------------------------------------------
 // DayState
 // ---------------------------------------------------------------------------
 
@@ -98,6 +122,10 @@ pub struct DailyPnlEngine {
     intraday_peak: Decimal,
     state: DayState,
     last_day: i64,
+    /// Edge-triggered latch: set when we transition INTO DailyStopped, cleared
+    /// when `take_protective_close()` is called. Guarantees exactly-once
+    /// liquidation emission per day.
+    pending_protective_close: Option<ProtectiveClose>,
 }
 
 impl DailyPnlEngine {
@@ -109,6 +137,7 @@ impl DailyPnlEngine {
             intraday_peak: initial_equity,
             state: DayState::Normal,
             last_day: -1, // Force reset on first update
+            pending_protective_close: None,
         }
     }
 
@@ -129,6 +158,7 @@ impl DailyPnlEngine {
             self.day_pnl_usd = Decimal::ZERO;
             self.state = DayState::Normal;
             self.last_day = day;
+            self.pending_protective_close = None;
         }
 
         self.day_pnl_usd = current_equity - self.day_open_equity;
@@ -155,10 +185,28 @@ impl DailyPnlEngine {
 
         // Never regress: only accept the candidate if it is at least as severe as current state.
         if candidate.severity() > self.state.severity() {
+            let prev = self.state;
             self.state = candidate;
+            if prev != DayState::DailyStopped && candidate == DayState::DailyStopped {
+                self.pending_protective_close = Some(ProtectiveClose {
+                    reason: ProtectiveCloseReason::DailyStopReached,
+                    at_timestamp: timestamp,
+                });
+            }
         }
 
         self.state
+    }
+
+    /// Drain the edge-triggered protective-close signal if one was armed.
+    /// Returns `Some(..)` exactly once per transition into `DailyStopped`.
+    pub fn take_protective_close(&mut self) -> Option<ProtectiveClose> {
+        self.pending_protective_close.take()
+    }
+
+    /// Peek at a pending protective-close request without consuming it.
+    pub fn peek_protective_close(&self) -> Option<&ProtectiveClose> {
+        self.pending_protective_close.as_ref()
     }
 
     /// Whether new trades can be opened in this day state.
@@ -251,5 +299,46 @@ mod tests {
         e.update(dec!(9850), 86400 * 2);
         assert_eq!(e.state(), DayState::Normal, "new day should reset state");
         assert!(e.can_trade());
+    }
+
+    #[test]
+    fn transition_into_stopped_arms_protective_close_exactly_once() {
+        let mut e = engine();
+        let t = 86400;
+        // Step 1: before the stop, nothing is armed.
+        e.update(dec!(10050), t);
+        assert!(e.peek_protective_close().is_none());
+        // Step 2: cross the daily stop → protective close armed with DailyStopReached.
+        e.update(dec!(9850), t + 1);
+        let pc = e
+            .peek_protective_close()
+            .expect("protective close must be armed on transition into DailyStopped")
+            .clone();
+        assert_eq!(pc.reason, ProtectiveCloseReason::DailyStopReached);
+        assert_eq!(pc.at_timestamp, t + 1);
+        // Step 3: takeing drains the latch.
+        let taken = e.take_protective_close().expect("should drain");
+        assert_eq!(taken, pc);
+        assert!(
+            e.take_protective_close().is_none(),
+            "latch must not re-fire on subsequent ticks in the same day"
+        );
+        // Step 4: a further tick while already stopped must not re-arm.
+        e.update(dec!(9800), t + 2);
+        assert!(
+            e.take_protective_close().is_none(),
+            "no re-arm while already stopped"
+        );
+    }
+
+    #[test]
+    fn protective_close_latch_clears_on_day_reset() {
+        let mut e = engine();
+        // Day 1 — arm and drain.
+        e.update(dec!(9850), 86400);
+        let _ = e.take_protective_close();
+        // Day 2 — no latent signal.
+        e.update(dec!(10000), 86400 * 2);
+        assert!(e.peek_protective_close().is_none());
     }
 }

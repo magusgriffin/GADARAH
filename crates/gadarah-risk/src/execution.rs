@@ -1,7 +1,7 @@
 //! Execution Engine with Smart Order Execution
 //!
 //! Handles spread-adjusted R:R gating, spread spikes, stale price detection,
-//! and retry logic for order execution.
+//! volatility halts, and retry logic for order execution.
 
 use crate::types::RiskDecision;
 use gadarah_core::{Direction, TradeSignal};
@@ -9,7 +9,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Configuration for the execution engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,14 +20,29 @@ pub struct ExecutionConfig {
     pub max_retries: u8,
     /// Delay between retries in milliseconds
     pub retry_delay_ms: u64,
-    /// Stale price threshold in seconds
+    /// Stale price threshold, legacy seconds path used only by the bar-cadence
+    /// backtest. Live loop should use `stale_price_threshold_ms`.
     pub stale_price_threshold: i64,
+    /// Stale-price HARD threshold in milliseconds (live path). New feeds
+    /// must arrive within this window or new entries are blocked.
+    pub stale_price_threshold_ms: i64,
+    /// Stale-price WARN threshold in milliseconds. Does not block; exposed
+    /// so the GUI can flash amber when latency is creeping up.
+    pub stale_warning_ms: i64,
     /// Slippage budget in pips
     pub slippage_budget_pips: Decimal,
     /// Minimum spread-adjusted R:R ratio
     pub min_rr_after_spread: Decimal,
     /// Reject if spread > typical * this multiplier
     pub spread_spike_mult: Decimal,
+    /// Minimum ATR samples before the statistical volatility halt engages.
+    pub vol_halt_min_samples: usize,
+    /// Standard-deviation multiple above the ATR mean that trips the
+    /// statistical volatility halt. 3.0 ≈ 99.7% tail under normal assumption.
+    pub vol_halt_sigma_mult: Decimal,
+    /// Cooldown in milliseconds after any vol halt trips before trading can
+    /// resume automatically.
+    pub vol_halt_cooldown_ms: i64,
 }
 
 impl Default for ExecutionConfig {
@@ -37,10 +52,156 @@ impl Default for ExecutionConfig {
             max_retries: 3,
             retry_delay_ms: 500,
             stale_price_threshold: 2,
+            stale_price_threshold_ms: 500,
+            stale_warning_ms: 200,
             slippage_budget_pips: dec!(1.0),
             min_rr_after_spread: dec!(1.2),
             spread_spike_mult: dec!(2.5),
+            vol_halt_min_samples: 30,
+            vol_halt_sigma_mult: dec!(3.0),
+            vol_halt_cooldown_ms: 60_000,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Volatility halt tracker (A9)
+// ---------------------------------------------------------------------------
+
+/// Reason a volatility halt fired. Surfaced to the caller so audit logs and
+/// GUI banners can distinguish a spread spike from a statistical ATR blowout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VolHaltReason {
+    /// Current spread blew past `max_spread_atr_ratio * atr`.
+    SpreadAtrRatio { spread: Decimal, atr: Decimal },
+    /// ATR crossed `mean + sigma_mult * stddev`.
+    AtrSigma {
+        atr: Decimal,
+        mean: Decimal,
+        stddev: Decimal,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VolHaltTracker {
+    atr_samples: VecDeque<Decimal>,
+    activated_ms: Option<i64>,
+    reason: Option<VolHaltReason>,
+}
+
+impl VolHaltTracker {
+    const MAX_SAMPLES: usize = 200;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_atr(&mut self, atr: Decimal) {
+        if atr.is_sign_negative() || atr.is_zero() {
+            return;
+        }
+        self.atr_samples.push_back(atr);
+        if self.atr_samples.len() > Self::MAX_SAMPLES {
+            self.atr_samples.pop_front();
+        }
+    }
+
+    pub fn is_active(&self, now_ms: i64, cooldown_ms: i64) -> bool {
+        match self.activated_ms {
+            Some(when) => now_ms - when < cooldown_ms,
+            None => false,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&VolHaltReason> {
+        self.reason.as_ref()
+    }
+
+    /// Test the current tick against both halt conditions. Returns `Some`
+    /// with the trigger when a halt fires; arms the tracker for the
+    /// cooldown period.
+    pub fn check(
+        &mut self,
+        current_spread: Decimal,
+        current_atr: Decimal,
+        now_ms: i64,
+        config: &ExecutionConfig,
+    ) -> Option<VolHaltReason> {
+        if self.is_active(now_ms, config.vol_halt_cooldown_ms) {
+            return self.reason.clone();
+        }
+
+        // Trigger 1: spread > max_spread_atr_ratio * atr
+        if !current_atr.is_zero() && current_spread > config.max_spread_atr_ratio * current_atr {
+            let reason = VolHaltReason::SpreadAtrRatio {
+                spread: current_spread,
+                atr: current_atr,
+            };
+            self.arm(reason.clone(), now_ms);
+            return Some(reason);
+        }
+
+        // Trigger 2: statistical ATR blowout
+        if self.atr_samples.len() >= config.vol_halt_min_samples {
+            let (mean, stddev) = mean_stddev(&self.atr_samples);
+            let threshold = mean + config.vol_halt_sigma_mult * stddev;
+            if current_atr > threshold {
+                let reason = VolHaltReason::AtrSigma {
+                    atr: current_atr,
+                    mean,
+                    stddev,
+                };
+                self.arm(reason.clone(), now_ms);
+                return Some(reason);
+            }
+        }
+
+        None
+    }
+
+    fn arm(&mut self, reason: VolHaltReason, now_ms: i64) {
+        self.activated_ms = Some(now_ms);
+        self.reason = Some(reason.clone());
+        warn!(
+            activated_at_ms = now_ms,
+            reason = ?reason,
+            "volatility halt armed",
+        );
+    }
+}
+
+fn mean_stddev(samples: &VecDeque<Decimal>) -> (Decimal, Decimal) {
+    let n = samples.len();
+    if n == 0 {
+        return (Decimal::ZERO, Decimal::ZERO);
+    }
+    let count = Decimal::from(n as i64);
+    let sum: Decimal = samples.iter().copied().sum();
+    let mean = sum / count;
+    let variance_sum: Decimal = samples
+        .iter()
+        .map(|x| {
+            let d = *x - mean;
+            d * d
+        })
+        .sum();
+    // Population stddev (we're estimating for this window, not a sample of the population).
+    let variance = variance_sum / count;
+    // rust_decimal has no sqrt; fall back to f64 for the last step. Precision
+    // here is fine since downstream compares via >, not equality.
+    let stddev_f64 = variance.to_f64_retain().sqrt();
+    let stddev = Decimal::try_from(stddev_f64).unwrap_or(Decimal::ZERO);
+    (mean, stddev)
+}
+
+trait DecimalF64Convert {
+    fn to_f64_retain(&self) -> f64;
+}
+
+impl DecimalF64Convert for Decimal {
+    fn to_f64_retain(&self) -> f64 {
+        use rust_decimal::prelude::ToPrimitive;
+        self.to_f64().unwrap_or(0.0)
     }
 }
 
@@ -139,6 +300,11 @@ pub struct ExecutionEngine {
     spread_tracker: SpreadTracker,
     fill_log: VecDeque<FillRecord>,
     last_tick_time: i64,
+    /// Wall-clock timestamp (unix ms) of the last tick we saw. Used for
+    /// sub-second staleness detection on the live path. Zero means no tick
+    /// has been ingested yet.
+    last_tick_ms: i64,
+    vol_halt: VolHaltTracker,
 }
 
 impl ExecutionEngine {
@@ -148,13 +314,45 @@ impl ExecutionEngine {
             spread_tracker: SpreadTracker::new(typical_spread),
             fill_log: VecDeque::with_capacity(1000),
             last_tick_time: 0,
+            last_tick_ms: 0,
+            vol_halt: VolHaltTracker::new(),
         }
     }
 
-    /// Update spread from market data
+    /// Update spread from market data. `timestamp` is unix seconds (matches
+    /// broker Tick feed). The engine also stamps a wall-clock ms value so
+    /// sub-second staleness can be checked on the live path.
     pub fn update_spread(&mut self, spread_pips: Decimal, timestamp: i64) {
         self.spread_tracker.record(spread_pips, timestamp);
         self.last_tick_time = timestamp;
+        self.last_tick_ms = chrono::Utc::now().timestamp_millis();
+    }
+
+    /// Feed a fresh ATR reading into the volatility-halt tracker. Callers
+    /// compute ATR (from the regime classifier or a dedicated tracker) and
+    /// hand it in; the engine does not compute it itself.
+    pub fn record_atr(&mut self, atr: Decimal) {
+        self.vol_halt.record_atr(atr);
+    }
+
+    /// Run both volatility-halt triggers against the current tick. Returns
+    /// `Some(reason)` when a halt fires; the caller rejects the signal and
+    /// logs the reason. Once armed, the tracker re-returns the same reason
+    /// for `vol_halt_cooldown_ms` before re-evaluating.
+    pub fn check_vol_halt(&mut self, current_atr: Decimal, now_ms: i64) -> Option<VolHaltReason> {
+        let spread = self.spread_tracker.current();
+        self.vol_halt.check(spread, current_atr, now_ms, &self.config)
+    }
+
+    /// True when the vol-halt cooldown is still holding us down from a
+    /// previous trigger.
+    pub fn vol_halt_active(&self, now_ms: i64) -> bool {
+        self.vol_halt
+            .is_active(now_ms, self.config.vol_halt_cooldown_ms)
+    }
+
+    pub fn vol_halt_reason(&self) -> Option<&VolHaltReason> {
+        self.vol_halt.reason()
     }
 
     /// Get current spread
@@ -162,12 +360,52 @@ impl ExecutionEngine {
         self.spread_tracker.current()
     }
 
-    /// Check if prices are stale
+    /// True when the current spread is a spike relative to session typical.
+    pub fn is_spread_spike(&self) -> bool {
+        self.spread_tracker.is_spike()
+    }
+
+    /// Read-only view of the config (lets the gate reach thresholds without
+    /// duplicating them).
+    pub fn config(&self) -> &ExecutionConfig {
+        &self.config
+    }
+
+    /// Check if prices are stale (legacy seconds-resolution path, backtest).
     pub fn is_stale(&self, current_time: i64) -> bool {
         if self.last_tick_time == 0 {
             return false; // No data yet
         }
-        current_time - self.last_tick_time > self.config.stale_price_threshold
+        let max_seconds = (self.config.stale_price_threshold_ms / 1000).max(1);
+        current_time - self.last_tick_time > max_seconds.max(self.config.stale_price_threshold)
+    }
+
+    /// Milliseconds since the last tick arrived (wall-clock). `0` when no tick
+    /// has been seen yet.
+    pub fn stale_ms(&self) -> i64 {
+        if self.last_tick_ms == 0 {
+            return 0;
+        }
+        (chrono::Utc::now().timestamp_millis() - self.last_tick_ms).max(0)
+    }
+
+    /// True when the feed has been silent longer than the hard threshold. The
+    /// live loop must reject new orders when this is true.
+    pub fn is_stale_ms(&self) -> bool {
+        if self.last_tick_ms == 0 {
+            return false;
+        }
+        self.stale_ms() > self.config.stale_price_threshold_ms
+    }
+
+    /// True when the feed has been silent longer than the warning threshold
+    /// but not long enough to block. Pure signal for the GUI.
+    pub fn is_warning_latency(&self) -> bool {
+        if self.last_tick_ms == 0 {
+            return false;
+        }
+        let elapsed = self.stale_ms();
+        elapsed > self.config.stale_warning_ms && elapsed <= self.config.stale_price_threshold_ms
     }
 
     /// Calculate spread-adjusted R:R for a signal
@@ -196,6 +434,7 @@ impl ExecutionEngine {
             risk_pct: _,
             lots,
             is_pyramid: _,
+            witness: _,
         } = decision
         else {
             return ExecutionResult::Rejected {
@@ -322,6 +561,69 @@ mod tests {
 
         tracker.record(dec!(5.0), 1003); // Spike
         assert!(tracker.is_spike());
+    }
+
+    #[test]
+    fn stale_ms_reports_zero_before_any_tick() {
+        let engine = ExecutionEngine::new(ExecutionConfig::default(), dec!(0.0001));
+        assert_eq!(engine.stale_ms(), 0);
+        assert!(!engine.is_stale_ms());
+    }
+
+    #[test]
+    fn is_stale_ms_tracks_wall_clock_after_tick() {
+        let mut engine = ExecutionEngine::new(ExecutionConfig::default(), dec!(0.0001));
+        engine.update_spread(dec!(1.0), 1_000_000);
+        // Force last_tick_ms into the past to simulate a stale feed without sleeping.
+        engine.last_tick_ms -= 1_000;
+        assert!(engine.is_stale_ms());
+    }
+
+    #[test]
+    fn warning_latency_fires_between_warn_and_hard_thresholds() {
+        let mut cfg = ExecutionConfig::default();
+        cfg.stale_warning_ms = 200;
+        cfg.stale_price_threshold_ms = 500;
+        let mut engine = ExecutionEngine::new(cfg, dec!(0.0001));
+        engine.update_spread(dec!(1.0), 1_000_000);
+        // Simulate 300ms elapsed since last tick.
+        engine.last_tick_ms -= 300;
+        assert!(engine.is_warning_latency());
+        assert!(!engine.is_stale_ms());
+    }
+
+    #[test]
+    fn vol_halt_fires_on_spread_atr_ratio() {
+        let mut engine = ExecutionEngine::new(ExecutionConfig::default(), dec!(0.0001));
+        // max_spread_atr_ratio default 0.30. If atr = 1.0, threshold = 0.30.
+        engine.update_spread(dec!(0.5), 1_000);
+        let fired = engine.check_vol_halt(dec!(1.0), 1_000);
+        assert!(matches!(fired, Some(VolHaltReason::SpreadAtrRatio { .. })));
+    }
+
+    #[test]
+    fn vol_halt_fires_on_atr_sigma() {
+        let mut engine = ExecutionEngine::new(ExecutionConfig::default(), dec!(0.0001));
+        // Feed 40 tight-ATR samples so mean+3σ is low.
+        for _ in 0..40 {
+            engine.record_atr(dec!(0.0010));
+        }
+        // Spread must stay under max_spread_atr_ratio * current_atr = 0.30 * 0.10 = 0.03
+        // so only the sigma branch can fire.
+        engine.update_spread(dec!(0.01), 1_000);
+        let fired = engine.check_vol_halt(dec!(0.1000), 1_000);
+        assert!(matches!(fired, Some(VolHaltReason::AtrSigma { .. })));
+    }
+
+    #[test]
+    fn vol_halt_cooldown_holds_for_window() {
+        let mut engine = ExecutionEngine::new(ExecutionConfig::default(), dec!(0.0001));
+        engine.update_spread(dec!(0.5), 1_000);
+        engine.check_vol_halt(dec!(1.0), 1_000); // arm
+        // Still armed 30s later
+        assert!(engine.vol_halt_active(31_000));
+        // Past the 60s cooldown
+        assert!(!engine.vol_halt_active(62_000));
     }
 
     #[test]

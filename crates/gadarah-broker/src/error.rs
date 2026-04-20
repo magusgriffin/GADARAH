@@ -38,4 +38,7 @@ pub enum BrokerError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Broker state not synced with venue; refuse to send orders until reconcile succeeds")]
+    NotSynced,
 }

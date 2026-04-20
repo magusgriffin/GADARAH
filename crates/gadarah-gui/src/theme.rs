@@ -2,6 +2,12 @@
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Stroke};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeVariant {
+    Dark,
+    Light,
+}
+
 // ── Palette ───────────────────────────────────────────────────────────────────
 pub const BG: Color32 = Color32::from_rgb(8, 12, 18);
 pub const CARD: Color32 = Color32::from_rgb(16, 21, 30);
@@ -20,64 +26,173 @@ pub const BLUE: Color32 = Color32::from_rgb(70, 155, 255);
 pub const INPUT_BG: Color32 = Color32::from_rgb(5, 8, 14);
 pub const GOLD: Color32 = Color32::from_rgb(255, 195, 0);
 
+// ── Light palette ─────────────────────────────────────────────────────────────
+pub const LIGHT_BG: Color32 = Color32::from_rgb(246, 248, 251);
+pub const LIGHT_CARD: Color32 = Color32::from_rgb(255, 255, 255);
+pub const LIGHT_BORDER: Color32 = Color32::from_rgb(214, 222, 234);
+pub const LIGHT_TEXT: Color32 = Color32::from_rgb(20, 28, 40);
+pub const LIGHT_MUTED: Color32 = Color32::from_rgb(92, 104, 120);
+pub const LIGHT_INPUT_BG: Color32 = Color32::from_rgb(238, 242, 247);
+
+// ── Palette structure ─────────────────────────────────────────────────────────
+struct Palette {
+    bg: Color32,
+    card: Color32,
+    border: Color32,
+    text: Color32,
+    muted: Color32,
+    input_bg: Color32,
+    faint_bg: Color32,
+    selection_bg: Color32,
+    warn_fg: Color32,
+    hyperlink: Color32,
+    // Widget-state fills
+    inactive_bg: Color32,
+    hovered_bg: Color32,
+    hovered_weak_bg: Color32,
+    active_bg: Color32,
+    active_weak_bg: Color32,
+    active_fg: Color32,
+    open_bg: Color32,
+    // Shared across variants
+    base: BaseVariant,
+}
+
+/// Which egui base visuals to start from.
+enum BaseVariant {
+    Dark,
+    Light,
+}
+
+const DARK: Palette = Palette {
+    bg: BG,
+    card: CARD,
+    border: BORDER,
+    text: TEXT,
+    muted: MUTED,
+    input_bg: INPUT_BG,
+    faint_bg: Color32::from_rgb(12, 17, 24),
+    selection_bg: Color32::from_rgb(0, 100, 75),
+    warn_fg: YELLOW,
+    hyperlink: ACCENT,
+    inactive_bg: Color32::from_rgb(24, 30, 40),
+    hovered_bg: Color32::from_rgb(30, 38, 50),
+    hovered_weak_bg: Color32::from_rgb(24, 32, 42),
+    active_bg: ACCENT_DIM,
+    active_weak_bg: ACCENT_DIM,
+    active_fg: Color32::WHITE,
+    open_bg: Color32::from_rgb(24, 30, 40),
+    base: BaseVariant::Dark,
+};
+
+const LIGHT: Palette = Palette {
+    bg: LIGHT_BG,
+    card: LIGHT_CARD,
+    border: LIGHT_BORDER,
+    text: LIGHT_TEXT,
+    muted: LIGHT_MUTED,
+    input_bg: LIGHT_INPUT_BG,
+    faint_bg: Color32::from_rgb(232, 238, 246),
+    selection_bg: Color32::from_rgb(190, 238, 224),
+    warn_fg: Color32::from_rgb(183, 132, 8),
+    hyperlink: Color32::from_rgb(20, 140, 110),
+    inactive_bg: Color32::from_rgb(232, 238, 246),
+    hovered_bg: Color32::from_rgb(220, 230, 244),
+    hovered_weak_bg: Color32::from_rgb(236, 242, 250),
+    active_bg: Color32::from_rgb(200, 232, 222),
+    active_weak_bg: Color32::from_rgb(208, 238, 228),
+    active_fg: LIGHT_TEXT,
+    open_bg: LIGHT_INPUT_BG,
+    base: BaseVariant::Light,
+};
+
 // ── Initialise ────────────────────────────────────────────────────────────────
 pub fn setup(ctx: &egui::Context) {
-    let cr8 = CornerRadius::same(8);
+    setup_dark(ctx);
+}
 
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = CARD;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+pub fn setup_variant(ctx: &egui::Context, variant: ThemeVariant) {
+    match variant {
+        ThemeVariant::Dark => setup_dark(ctx),
+        ThemeVariant::Light => setup_light(ctx),
+    }
+}
+
+pub fn setup_light(ctx: &egui::Context) {
+    apply_palette(ctx, &LIGHT);
+}
+
+pub fn setup_dark(ctx: &egui::Context) {
+    apply_palette(ctx, &DARK);
+}
+
+fn apply_palette(ctx: &egui::Context, p: &Palette) {
+    let cr8 = CornerRadius::same(8);
+    let mut v = match p.base {
+        BaseVariant::Dark => egui::Visuals::dark(),
+        BaseVariant::Light => egui::Visuals::light(),
+    };
+    v.panel_fill = p.bg;
+    v.window_fill = p.card;
+    v.window_stroke = Stroke::new(1.0, p.border);
     v.popup_shadow = egui::Shadow::NONE;
     v.window_shadow = egui::Shadow::NONE;
-    v.extreme_bg_color = INPUT_BG;
-    v.faint_bg_color = Color32::from_rgb(12, 17, 24);
-    v.warn_fg_color = YELLOW;
+    v.extreme_bg_color = p.input_bg;
+    v.faint_bg_color = p.faint_bg;
+    v.warn_fg_color = p.warn_fg;
     v.error_fg_color = RED;
-    v.hyperlink_color = ACCENT;
-    v.selection.bg_fill = Color32::from_rgb(0, 100, 75);
+    v.hyperlink_color = p.hyperlink;
+    v.selection.bg_fill = p.selection_bg;
 
     {
         let w = &mut v.widgets.noninteractive;
-        w.bg_fill = CARD;
-        w.weak_bg_fill = BG;
-        w.fg_stroke = Stroke::new(1.0, MUTED);
-        w.bg_stroke = Stroke::new(1.0, BORDER);
+        w.bg_fill = p.card;
+        w.weak_bg_fill = p.bg;
+        w.fg_stroke = Stroke::new(1.0, p.muted);
+        w.bg_stroke = Stroke::new(1.0, p.border);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.inactive;
-        w.bg_fill = Color32::from_rgb(24, 30, 40);
-        w.weak_bg_fill = CARD;
-        w.fg_stroke = Stroke::new(1.0, MUTED);
-        w.bg_stroke = Stroke::new(1.0, BORDER);
+        w.bg_fill = p.inactive_bg;
+        w.weak_bg_fill = p.card;
+        // Dark theme uses muted inactive text; light uses full text.
+        let inactive_fg = match p.base {
+            BaseVariant::Dark => p.muted,
+            BaseVariant::Light => p.text,
+        };
+        w.fg_stroke = Stroke::new(1.0, inactive_fg);
+        w.bg_stroke = Stroke::new(1.0, p.border);
         w.corner_radius = cr8;
         w.expansion = 0.0;
     }
     {
         let w = &mut v.widgets.hovered;
-        w.bg_fill = Color32::from_rgb(30, 38, 50);
-        w.weak_bg_fill = Color32::from_rgb(24, 32, 42);
-        w.fg_stroke = Stroke::new(1.0, TEXT);
+        w.bg_fill = p.hovered_bg;
+        w.weak_bg_fill = p.hovered_weak_bg;
+        w.fg_stroke = Stroke::new(1.0, p.text);
         w.bg_stroke = Stroke::new(1.0, ACCENT);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.active;
-        w.bg_fill = ACCENT_DIM;
-        w.weak_bg_fill = ACCENT_DIM;
-        w.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        w.bg_fill = p.active_bg;
+        w.weak_bg_fill = p.active_weak_bg;
+        w.fg_stroke = Stroke::new(1.0, p.active_fg);
         w.corner_radius = cr8;
     }
     {
         let w = &mut v.widgets.open;
-        w.bg_fill = Color32::from_rgb(24, 30, 40);
+        w.bg_fill = p.open_bg;
         w.bg_stroke = Stroke::new(1.0, ACCENT);
         w.corner_radius = cr8;
     }
 
     ctx.set_visuals(v);
+    apply_typography(ctx);
+}
 
+fn apply_typography(ctx: &egui::Context) {
     let mut s = (*ctx.style()).clone();
     s.text_styles = [
         (egui::TextStyle::Small, egui::FontId::proportional(11.0)),

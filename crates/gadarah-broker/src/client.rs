@@ -123,6 +123,9 @@ type PendingEntry = oneshot::Sender<Result<prost::bytes::Bytes, BrokerError>>;
 struct CtraderInner {
     connected: AtomicBool,
     authenticated: AtomicBool,
+    /// True once `reconcile_blocking` has completed successfully for the current session.
+    /// Order sending is refused while this is false so we never send blind after a reconnect.
+    account_synced: AtomicBool,
     /// Channel to the writer task.  None when disconnected.
     write_tx: Mutex<Option<mpsc::UnboundedSender<prost::bytes::Bytes>>>,
     /// In-flight requests keyed by `client_msg_id`.
@@ -146,6 +149,7 @@ impl CtraderInner {
         Arc::new(Self {
             connected: AtomicBool::new(false),
             authenticated: AtomicBool::new(false),
+            account_synced: AtomicBool::new(false),
             write_tx: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             account_info: Mutex::new(None),
@@ -716,12 +720,23 @@ impl CtraderClient {
         }
     }
 
-    /// Connect, authenticate, load symbols, subscribe to spots.
-    /// Must be called before any `Broker` trait method.
+    /// Connect, authenticate, load symbols, subscribe to spots, and reconcile
+    /// open positions/orders with the venue.
+    ///
+    /// Reconcile is mandatory: if it fails we tear the session back down so the
+    /// `account_synced` flag stays false and `send_order` cannot fire blind.
     pub fn connect_blocking(&mut self) -> Result<(), BrokerError> {
         let inner = Arc::clone(&self.inner);
         let config = self.config.clone();
-        self.rt.block_on(connect_and_auth(inner, config))
+        self.rt.block_on(connect_and_auth(inner, config))?;
+        match self.reconcile_blocking() {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                error!("Post-connect reconcile failed: {e}; resetting session");
+                self.reset_inner();
+                Err(e)
+            }
+        }
     }
 
     /// Tear down the current connection state so a fresh `connect_blocking`
@@ -729,6 +744,7 @@ impl CtraderClient {
     fn reset_inner(&mut self) {
         self.inner.connected.store(false, Ordering::Release);
         self.inner.authenticated.store(false, Ordering::Release);
+        self.inner.account_synced.store(false, Ordering::Release);
         // Drop the writer channel so the writer task exits.
         *self.inner.write_tx.lock().unwrap() = None;
         // Fail any in-flight requests.
@@ -759,7 +775,7 @@ impl CtraderClient {
 
             match self.connect_blocking() {
                 Ok(()) => {
-                    info!("Reconnected on attempt {attempt}");
+                    info!("Reconnected and reconciled on attempt {attempt}");
                     return Ok(());
                 }
                 Err(e) => {
@@ -773,10 +789,23 @@ impl CtraderClient {
         )))
     }
 
-    /// Reconcile open positions/orders — call after a restart.
+    /// Reconcile open positions/orders — call after a restart or reconnect.
+    /// On success, sets `account_synced = true` so `send_order` is unblocked.
     pub fn reconcile_blocking(&mut self) -> Result<ReconcileResult, BrokerError> {
         let inner = Arc::clone(&self.inner);
-        self.rt.block_on(do_reconcile(inner))
+        let result = self.rt.block_on(do_reconcile(inner));
+        if result.is_ok() {
+            self.inner.account_synced.store(true, Ordering::Release);
+        } else {
+            self.inner.account_synced.store(false, Ordering::Release);
+        }
+        result
+    }
+
+    /// True when the last reconcile succeeded for the current session.
+    /// Clears on disconnect/reconnect until reconcile runs again.
+    pub fn is_account_synced(&self) -> bool {
+        self.inner.account_synced.load(Ordering::Acquire)
     }
 
     /// Connect (app-auth only) and list trading accounts for an access token.
@@ -804,6 +833,10 @@ impl CtraderClient {
     // ── Internal async helpers ─────────────────────────────────────────────
 
     async fn send_order_async(&self, req: &OrderRequest) -> Result<FillReport, BrokerError> {
+        if !self.inner.account_synced.load(Ordering::Acquire) {
+            return Err(BrokerError::NotSynced);
+        }
+
         let ctid = self
             .inner
             .ctid_account_id
@@ -912,6 +945,7 @@ impl CtraderClient {
             position_id,
             fill_price,
             filled_lots: volume_to_lots(deal.filled_volume),
+            requested_lots: req.lots,
             fill_time: deal.execution_timestamp / 1000,
             slippage_pips: Decimal::ZERO,
             commission,
@@ -1027,7 +1061,11 @@ impl CtraderClient {
 // ── Broker trait ──────────────────────────────────────────────────────────────
 
 impl Broker for CtraderClient {
-    fn send_order(&mut self, req: &OrderRequest) -> Result<FillReport, BrokerError> {
+    fn send_order(
+        &mut self,
+        req: &OrderRequest,
+        _witness: &gadarah_risk::gate::ExecutionWitness,
+    ) -> Result<FillReport, BrokerError> {
         let inner = Arc::clone(&self.inner);
         let _ = inner; // ensure inner lives; actual reference is via self below
         self.rt.block_on(self.send_order_async(req))
@@ -1193,5 +1231,38 @@ mod tests {
         assert!(!client.is_authenticated());
         assert!(client.get_tick("EURUSD").is_err());
         assert!(client.account_info().is_err());
+    }
+
+    #[test]
+    fn test_fresh_client_not_synced() {
+        let config = CtraderConfig::new("id".to_string(), "s".to_string());
+        let client = CtraderClient::new(config);
+        assert!(
+            !client.is_account_synced(),
+            "fresh client must not be marked synced until reconcile succeeds"
+        );
+    }
+
+    #[test]
+    fn test_send_order_refuses_while_unsynced() {
+        let config = CtraderConfig::new("id".to_string(), "s".to_string());
+        let client = CtraderClient::new(config);
+        let req = OrderRequest {
+            symbol: "EURUSD".to_string(),
+            direction: gadarah_core::Direction::Buy,
+            lots: Decimal::from_str_exact("0.10").unwrap(),
+            order_type: OrderType::Market,
+            stop_loss: Decimal::ZERO,
+            take_profit: Decimal::ZERO,
+            comment: "test".to_string(),
+        };
+        let err = client
+            .rt
+            .block_on(client.send_order_async(&req))
+            .expect_err("must refuse while unsynced");
+        assert!(
+            matches!(err, BrokerError::NotSynced),
+            "unsynced client returned wrong error: {err:?}"
+        );
     }
 }

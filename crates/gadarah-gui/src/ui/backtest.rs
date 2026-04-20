@@ -682,6 +682,7 @@ impl BacktestPanel {
             let wf_config = WalkForwardConfig {
                 num_folds: 5,
                 in_sample_ratio: 0.70,
+                ..WalkForwardConfig::default()
             };
 
             let sym = symbol.clone();

@@ -488,7 +488,11 @@ pub fn run_engine(
         let drift_mult = match drift_detector.evaluate() {
             DriftSignal::Halt { reason } => {
                 debug!("DRIFT HALT: {}", reason);
-                kill_switch.activate(&reason, bar.timestamp);
+                kill_switch.activate_with_details(
+                    gadarah_risk::KillReason::DriftDetector,
+                    reason,
+                    bar.timestamp,
+                );
                 diagnostics.blocked_drift_halt += 1;
                 let observed = advance_heads(bar, heads, &session_profile, current_regime.as_ref());
                 diagnostics.note_blocked_signals(&observed);
@@ -687,6 +691,8 @@ pub fn run_engine(
             let adjusted = RiskPercent::clamped(base_risk.inner() * final_mult);
 
             let sl_distance = (signal.entry - signal.stop_loss).abs();
+            let cost_per_lot_usd = config.mock_config.spread_pips * config.pip_value_per_lot
+                + config.mock_config.commission_per_lot;
             let lots = match calculate_lots(&SizingInputs {
                 risk_pct: adjusted,
                 account_equity: account.current_equity,
@@ -696,6 +702,11 @@ pub fn run_engine(
                 min_lot: dec!(0.01),
                 max_lot: dec!(50.0),
                 lot_step: dec!(0.01),
+                cost_per_lot_usd,
+                contract_size: Decimal::ZERO,
+                price: Decimal::ZERO,
+                leverage: Decimal::ZERO,
+                max_margin_util_pct: Decimal::ZERO,
             }) {
                 Ok(l) => l,
                 Err(_) => {
@@ -746,16 +757,21 @@ pub fn run_engine(
                 continue;
             }
 
-            // Execute via mock broker
-            let fill = match broker.send_order(&OrderRequest {
-                symbol: config.symbol.clone(),
-                direction: signal.direction,
-                lots,
-                order_type: OrderType::Market,
-                stop_loss: signal.stop_loss,
-                take_profit: signal.take_profit,
-                comment: format!("{:?}", signal.head),
-            }) {
+            // Execute via mock broker. Backtests bypass the live gate — use
+            // the simulation-only witness so this path cannot accidentally
+            // slip onto the live-order hot path.
+            let fill = match broker.send_order(
+                &OrderRequest {
+                    symbol: config.symbol.clone(),
+                    direction: signal.direction,
+                    lots,
+                    order_type: OrderType::Market,
+                    stop_loss: signal.stop_loss,
+                    take_profit: signal.take_profit,
+                    comment: format!("{:?}", signal.head),
+                },
+                &gadarah_risk::gate::ExecutionWitness::for_simulation(),
+            ) {
                 Ok(f) => f,
                 Err(e) => {
                     debug!("Order rejected: {e}");

@@ -4,6 +4,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 
+use gadarah_core::meta::{SegmentStatsProvider, SegmentStatsSnapshot};
 use gadarah_core::{HeadId, Regime9, Session};
 
 // ---------------------------------------------------------------------------
@@ -146,5 +147,22 @@ impl PerformanceLedger {
 impl Default for PerformanceLedger {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl SegmentStatsProvider for PerformanceLedger {
+    fn snapshot(
+        &self,
+        head: HeadId,
+        regime: Regime9,
+        session: Session,
+    ) -> Option<SegmentStatsSnapshot> {
+        self.segments
+            .get(&(head, regime, session))
+            .map(|s| SegmentStatsSnapshot {
+                total_trades: s.total_trades,
+                wins: s.wins,
+                total_r: s.total_r,
+            })
     }
 }

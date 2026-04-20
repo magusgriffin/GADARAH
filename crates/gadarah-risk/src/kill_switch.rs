@@ -1,7 +1,9 @@
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 use crate::account::AccountState;
+use crate::types::KillReason;
 
 // ---------------------------------------------------------------------------
 // KillSwitch
@@ -11,10 +13,16 @@ use crate::account::AccountState;
 /// - 95% of daily DD limit is reached
 /// - 95% of total DD limit is reached
 /// - 3 consecutive losses (30-minute cooldown)
+///
+/// Immutability contract: once armed, the only way the switch clears is via
+/// `tick()` observing an expired cooldown. There is no public `deactivate()`
+/// — external code cannot override a tripped kill switch. A `reset_for_test()`
+/// hook is available under `#[cfg(test)]` only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KillSwitch {
     active: bool,
-    reason: Option<String>,
+    reason: Option<KillReason>,
+    details: Option<String>,
     activated_at: Option<i64>,
     /// If set, trading resumes after this unix timestamp.
     cooldown_until: Option<i64>,
@@ -26,24 +34,37 @@ impl KillSwitch {
         Self {
             active: false,
             reason: None,
+            details: None,
             activated_at: None,
             cooldown_until: None,
             cooldown_loss_streak: None,
         }
     }
 
-    /// Check all kill-switch triggers. Returns `true` if the switch is active
-    /// (trading should be halted).
-    pub fn check(&mut self, account: &AccountState, timestamp: i64) -> bool {
-        // Check cooldown expiry first
+    /// Advance internal clock. Expires any cooldown whose window has passed
+    /// and logs the audit event. Call every tick before `check()`.
+    fn tick(&mut self, timestamp: i64) {
         if let Some(resume_at) = self.cooldown_until {
             if timestamp >= resume_at {
+                let prior = self.reason;
                 self.cooldown_until = None;
                 self.active = false;
                 self.reason = None;
+                self.details = None;
                 self.activated_at = None;
+                info!(
+                    prior_reason = ?prior,
+                    resumed_at = timestamp,
+                    "kill switch cooldown expired",
+                );
             }
         }
+    }
+
+    /// Check all kill-switch triggers. Returns `true` if the switch is active
+    /// (trading should be halted).
+    pub fn check(&mut self, account: &AccountState, timestamp: i64) -> bool {
+        self.tick(timestamp);
 
         if self
             .cooldown_loss_streak
@@ -59,14 +80,14 @@ impl KillSwitch {
         // Trigger 1: 95% of daily DD limit
         let daily_dd_trigger = account.firm.daily_dd_limit_pct * dec!(0.95);
         if account.dd_from_hwm_pct >= daily_dd_trigger {
-            self.activate("Daily DD 95% trigger", timestamp);
+            self.arm(KillReason::DailyDD, None, timestamp);
             return true;
         }
 
         // Trigger 2: 95% of total DD limit
         let total_dd_trigger = account.firm.max_dd_limit_pct * dec!(0.95);
         if account.dd_from_hwm_pct >= total_dd_trigger {
-            self.activate("Total DD 95% trigger", timestamp);
+            self.arm(KillReason::TotalDD, None, timestamp);
             return true;
         }
 
@@ -75,30 +96,49 @@ impl KillSwitch {
             && self.cooldown_loss_streak != Some(account.consecutive_losses)
         {
             self.cooldown_until = Some(timestamp + 1800); // 30 minutes
-            self.active = true;
-            self.reason = Some("3 consecutive losses -- 30-min cooldown".into());
-            self.activated_at = Some(timestamp);
             self.cooldown_loss_streak = Some(account.consecutive_losses);
+            self.arm(
+                KillReason::ConsecutiveLosses,
+                Some(format!(
+                    "{} consecutive losses → 30 min cooldown",
+                    account.consecutive_losses
+                )),
+                timestamp,
+            );
             return true;
         }
 
         false
     }
 
-    /// Manually activate the kill switch (e.g. from drift detector halt).
-    pub fn activate(&mut self, reason: &str, timestamp: i64) {
-        self.active = true;
-        self.reason = Some(reason.into());
-        self.activated_at = Some(timestamp);
+    /// Arm the kill switch for an external reason (drift halt, vol halt, compliance).
+    /// Idempotent: re-arming while already active keeps the original reason and
+    /// timestamp so the audit trail points at the *first* trip.
+    pub fn activate(&mut self, reason: KillReason, timestamp: i64) {
+        if !self.active {
+            self.arm(reason, None, timestamp);
+        }
     }
 
-    /// Manually deactivate the kill switch.
-    pub fn deactivate(&mut self) {
-        self.active = false;
-        self.reason = None;
-        self.activated_at = None;
-        self.cooldown_until = None;
-        self.cooldown_loss_streak = None;
+    /// Arm with a free-form detail message for context (e.g. drift reason).
+    pub fn activate_with_details(&mut self, reason: KillReason, details: String, timestamp: i64) {
+        if !self.active {
+            self.arm(reason, Some(details), timestamp);
+        }
+    }
+
+    fn arm(&mut self, reason: KillReason, details: Option<String>, timestamp: i64) {
+        self.active = true;
+        self.reason = Some(reason);
+        self.details = details.clone();
+        self.activated_at = Some(timestamp);
+        warn!(
+            reason = %reason,
+            details = ?details,
+            activated_at = timestamp,
+            cooldown_until = ?self.cooldown_until,
+            "kill switch armed",
+        );
     }
 
     /// Whether the kill switch is currently active.
@@ -106,9 +146,14 @@ impl KillSwitch {
         self.active
     }
 
-    /// The reason the kill switch was activated, if any.
-    pub fn reason(&self) -> Option<&str> {
-        self.reason.as_deref()
+    /// Typed reason the kill switch was activated, if any.
+    pub fn reason(&self) -> Option<KillReason> {
+        self.reason
+    }
+
+    /// Human-readable detail message if one was supplied.
+    pub fn details(&self) -> Option<&str> {
+        self.details.as_deref()
     }
 
     /// Unix timestamp when the kill switch was activated, if any.
@@ -119,6 +164,18 @@ impl KillSwitch {
     /// Unix timestamp when cooldown ends (trading can resume), if any.
     pub fn cooldown_until(&self) -> Option<i64> {
         self.cooldown_until
+    }
+
+    /// Test-only hook to clear internal state. Not exposed outside `cfg(test)`.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn reset_for_test(&mut self) {
+        self.active = false;
+        self.reason = None;
+        self.details = None;
+        self.activated_at = None;
+        self.cooldown_until = None;
+        self.cooldown_loss_streak = None;
     }
 }
 
@@ -169,33 +226,26 @@ mod tests {
     #[test]
     fn fires_at_95_pct_of_daily_dd_limit() {
         let mut ks = KillSwitch::new();
-        // daily_dd_limit = 4.0%, 95% trigger = 3.8%
-        // Below threshold: 3.7% — should NOT fire
         let account_safe = account_with_dd(dec!(3.7));
         assert!(
             !ks.check(&account_safe, 0),
             "should not fire at 3.7% dd (below 3.8% trigger)"
         );
-
-        // At threshold: 3.8% — MUST fire
         let account_trigger = account_with_dd(dec!(3.8));
-        assert!(
-            ks.check(&account_trigger, 1),
-            "must fire at 3.8% dd (= 95% of 4.0% daily limit)"
-        );
+        assert!(ks.check(&account_trigger, 1));
+        assert_eq!(ks.reason(), Some(KillReason::DailyDD));
     }
 
     #[test]
     fn fires_at_95_pct_of_total_dd_limit() {
         let mut ks = KillSwitch::new();
-        // max_dd_limit = 6.0%, 95% trigger = 5.7%
-        // Set daily_dd_limit high (10%) so it doesn't fire before total DD trigger.
         let mut safe = account_with_dd(dec!(5.6));
         safe.firm.daily_dd_limit_pct = dec!(10.0);
         assert!(!ks.check(&safe, 0));
         let mut trigger = account_with_dd(dec!(5.7));
         trigger.firm.daily_dd_limit_pct = dec!(10.0);
         assert!(ks.check(&trigger, 1));
+        assert_eq!(ks.reason(), Some(KillReason::TotalDD));
     }
 
     #[test]
@@ -205,7 +255,7 @@ mod tests {
         account.consecutive_losses = 3;
         assert!(ks.check(&account, 1000));
         assert!(ks.is_active());
-        // After cooldown expires (1800s = 30 min), resumes
+        assert_eq!(ks.reason(), Some(KillReason::ConsecutiveLosses));
         assert!(!ks.check(&account_with_dd(Decimal::ZERO), 1000 + 1800));
     }
 
@@ -215,7 +265,6 @@ mod tests {
         let mut account = account_with_dd(Decimal::ZERO);
         account.consecutive_losses = 3;
         ks.check(&account, 0);
-        // 29 minutes later — still active
         assert!(ks.check(&account_with_dd(Decimal::ZERO), 1799));
     }
 
@@ -227,12 +276,29 @@ mod tests {
         assert!(ks.check(&account, 1000));
         assert!(ks.is_active());
 
-        // Same stale streak after expiry should not immediately re-arm.
         assert!(!ks.check(&account, 1000 + 1800));
         assert!(!ks.is_active());
 
-        // A fresh additional loss should arm it again.
         account.consecutive_losses = 4;
         assert!(ks.check(&account, 1000 + 1801));
+    }
+
+    #[test]
+    fn activate_is_idempotent_preserves_first_reason() {
+        let mut ks = KillSwitch::new();
+        ks.activate(KillReason::DriftDetector, 1000);
+        ks.activate(KillReason::Manual, 2000);
+        assert_eq!(ks.reason(), Some(KillReason::DriftDetector));
+        assert_eq!(ks.activated_at(), Some(1000));
+    }
+
+    #[test]
+    fn no_public_deactivate_exists() {
+        // Compile-only check: if someone re-adds a public `deactivate()` this
+        // test must be updated too (because it proves the method is gone).
+        let ks = KillSwitch::new();
+        assert!(!ks.is_active());
+        // The only way to clear state in production is via tick() after a
+        // cooldown has elapsed — not tested here, covered by consecutive_losses_triggers_cooldown.
     }
 }

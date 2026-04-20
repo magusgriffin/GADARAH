@@ -4,6 +4,7 @@ pub mod error;
 pub mod monte_carlo;
 pub mod replayer;
 pub mod stats;
+pub mod stress;
 pub mod stress_test;
 pub mod walk_forward;
 
@@ -14,7 +15,13 @@ pub use challenge_sim::{
 };
 pub use engine::{run_engine, EngineConfig, EngineResult};
 pub use error::BacktestError;
-pub use monte_carlo::{run_monte_carlo, MonteCarloConfig, MonteCarloResult};
+pub use monte_carlo::{
+    run_monte_carlo, BootstrapMode, MonteCarloConfig, MonteCarloResult,
+};
+pub use stress::{
+    BrokerDisconnectScenario, FlashCrashScenario, NewsGapScenario, SlippageShockScenario,
+    StressScenario, StressedInput, WeekendGapScenario,
+};
 pub use replayer::{run_replay, ReplayConfig, ReplayResult};
 pub use stats::{BacktestStats, TradeResult};
 pub use stress_test::{run_stress_test, StressConfig, StressResult};

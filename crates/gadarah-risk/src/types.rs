@@ -59,6 +59,10 @@ pub enum RiskDecision {
         risk_pct: RiskPercent,
         lots: Decimal,
         is_pyramid: bool,
+        /// Zero-sized proof that the `PreTradeGate` cleared this order. The
+        /// broker trait requires a witness on `send_order`, so un-gated orders
+        /// cannot compile.
+        witness: crate::gate::ExecutionWitness,
     },
     Reject {
         signal: TradeSignal,
@@ -88,6 +92,44 @@ pub enum RejectReason {
     PerformanceLedgerBlock,
     RrTooLowAfterSpread,
     StalePriceData,
+    EquityFloor,
+    MarginExceeded,
+    SegmentDisabled,
+    BrokerDesynced,
+    CorrelationCap,
+    RegimeConfidenceLow,
+    MtfCounterTrend,
+    PartialFillRejected,
+}
+
+/// Stable, machine-readable reasons the kill switch was armed. Used in place of
+/// free-form strings so that downstream code (GUI, audit log, metrics) can
+/// route on a finite enum rather than substring-matching a sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KillReason {
+    DailyDD,
+    TotalDD,
+    BrokerStale,
+    VolHalt,
+    ComplianceTrip,
+    ConsecutiveLosses,
+    DriftDetector,
+    Manual,
+}
+
+impl std::fmt::Display for KillReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DailyDD => write!(f, "daily DD 95% trigger"),
+            Self::TotalDD => write!(f, "total DD 95% trigger"),
+            Self::BrokerStale => write!(f, "broker data stale"),
+            Self::VolHalt => write!(f, "volatility halt"),
+            Self::ComplianceTrip => write!(f, "prop-firm compliance trip"),
+            Self::ConsecutiveLosses => write!(f, "consecutive-loss cooldown"),
+            Self::DriftDetector => write!(f, "drift detector halt"),
+            Self::Manual => write!(f, "manual"),
+        }
+    }
 }
 
 impl std::fmt::Display for RejectReason {
@@ -108,7 +150,15 @@ impl std::fmt::Display for RejectReason {
             Self::DriftDetectorHalt => write!(f, "Drift detector halt"),
             Self::PerformanceLedgerBlock => write!(f, "Performance ledger blocked segment"),
             Self::RrTooLowAfterSpread => write!(f, "R:R too low after spread adjustment"),
-            Self::StalePriceData => write!(f, "Stale price data (> 2 seconds old)"),
+            Self::StalePriceData => write!(f, "Stale price data"),
+            Self::EquityFloor => write!(f, "Equity at account floor"),
+            Self::MarginExceeded => write!(f, "Margin utilization cap exceeded"),
+            Self::SegmentDisabled => write!(f, "Performance ledger disabled this segment"),
+            Self::BrokerDesynced => write!(f, "Broker not reconciled after reconnect"),
+            Self::CorrelationCap => write!(f, "Correlated-exposure cap reached"),
+            Self::RegimeConfidenceLow => write!(f, "Regime confidence below threshold"),
+            Self::MtfCounterTrend => write!(f, "Counter to higher-timeframe bias"),
+            Self::PartialFillRejected => write!(f, "Partial fill below minimum"),
         }
     }
 }
@@ -147,6 +197,12 @@ pub enum SizingError {
 
     #[error("Zero pip value per lot")]
     ZeroPipValue,
+
+    #[error("Margin utilization cap exceeded: required {required}, budget {budget}")]
+    MarginExceeded { required: Decimal, budget: Decimal },
+
+    #[error("Round-trip costs exceed risk budget: costs {costs}, budget {budget}")]
+    CostsExceedRisk { costs: Decimal, budget: Decimal },
 }
 
 #[cfg(test)]

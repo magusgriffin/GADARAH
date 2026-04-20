@@ -138,6 +138,25 @@ impl AccountState {
         }
     }
 
+    /// True when remaining DD headroom has been exhausted. Any new position
+    /// would risk immediate rule breach; the pre-trade gate must reject.
+    pub fn is_at_floor(&self) -> bool {
+        self.dd_remaining_pct <= Decimal::ZERO
+    }
+
+    /// Minimum equity below which we refuse to open new positions even if the
+    /// firm's formal DD rule has not tripped yet. Chosen as the larger of
+    /// $100 and 85% of starting balance so small accounts still have an
+    /// absolute floor and large accounts get a 15%-from-start cushion.
+    pub fn min_trading_equity(&self) -> Decimal {
+        (self.starting_balance * dec!(0.85)).max(dec!(100))
+    }
+
+    /// True when current equity has fallen below `min_trading_equity()`.
+    pub fn below_trading_equity(&self) -> bool {
+        self.current_equity < self.min_trading_equity()
+    }
+
     /// DD proximity scaling -- the closer to the limit, the smaller we trade.
     pub fn dd_distance_multiplier(&self) -> Decimal {
         let remaining = self.dd_remaining_pct;
@@ -271,6 +290,35 @@ mod tests {
 
         // floor = 5500 - 500 = 5000, equity 4990 < floor
         assert_eq!(account.dd_remaining_pct, Decimal::ZERO);
+    }
+
+    #[test]
+    fn is_at_floor_fires_when_dd_remaining_is_zero() {
+        let mut account = make_account(dec!(5000));
+        account.firm.dd_mode = "static".into();
+        account.update_equity(dec!(4700));
+        assert!(account.is_at_floor());
+    }
+
+    #[test]
+    fn min_trading_equity_uses_85_pct_for_large_accounts() {
+        let mut account = make_account(dec!(100_000));
+        account.starting_balance = dec!(100_000);
+        assert_eq!(account.min_trading_equity(), dec!(85000));
+    }
+
+    #[test]
+    fn min_trading_equity_floors_at_100_for_tiny_accounts() {
+        let mut account = make_account(dec!(100));
+        account.starting_balance = dec!(100);
+        assert_eq!(account.min_trading_equity(), dec!(100));
+    }
+
+    #[test]
+    fn below_trading_equity_triggers_when_equity_dips_under_floor() {
+        let mut account = make_account(dec!(5000));
+        account.update_equity(dec!(4000));
+        assert!(account.below_trading_equity());
     }
 
     #[test]

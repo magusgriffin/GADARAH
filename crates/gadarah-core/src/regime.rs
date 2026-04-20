@@ -1,5 +1,6 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use serde::{Deserialize, Serialize};
 
 use crate::indicators::{
     BBWidthPercentile, BollingerBands, ChoppinessIndex, HurstExponent, ADX, ATR, EMA,
@@ -15,6 +16,59 @@ struct RegimeInputs {
     hurst: Decimal,
     bb_pctile: Decimal,
     ci: Decimal,
+}
+
+/// Tunable regime-classification thresholds.  Defaults match the historical
+/// hardcoded values so existing behaviour is preserved when no config is
+/// loaded.  Walk-forward search (workstream D5) overwrites these.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeThresholds {
+    /// Consecutive bars of BB squeeze required to flag BreakoutPending.
+    pub squeeze_bars_for_breakout: u32,
+    /// ADX floor that separates trending from non-trending classification.
+    pub strong_trend_adx: Decimal,
+    /// Hurst floor for strong-trend classification.
+    pub strong_trend_hurst: Decimal,
+    /// ADX lower bound for weak-trend classification.
+    pub weak_trend_adx_lo: Decimal,
+    /// ADX upper bound for weak-trend classification.
+    pub weak_trend_adx_hi: Decimal,
+    /// Hurst lower bound for weak-trend classification.
+    pub weak_trend_hurst_lo: Decimal,
+    /// Hurst upper bound for weak-trend classification.
+    pub weak_trend_hurst_hi: Decimal,
+    /// Choppiness Index threshold above which the market is considered choppy.
+    pub choppy_ci: Decimal,
+    /// ADX ceiling below which the market is considered choppy.
+    pub choppy_adx: Decimal,
+    /// Hurst ceiling for ranging regimes.
+    pub ranging_hurst: Decimal,
+    /// BB-width percentile ceiling for RangingTight classification.
+    pub ranging_tight_bb_pctile: Decimal,
+    /// BB-width percentile ceiling for RangingWide classification.
+    pub ranging_wide_bb_pctile: Decimal,
+    /// Choppiness Index floor for RangingTight classification.
+    pub ranging_tight_ci: Decimal,
+}
+
+impl Default for RegimeThresholds {
+    fn default() -> Self {
+        Self {
+            squeeze_bars_for_breakout: 10,
+            strong_trend_adx: dec!(25),
+            strong_trend_hurst: dec!(0.60),
+            weak_trend_adx_lo: dec!(18),
+            weak_trend_adx_hi: dec!(27),
+            weak_trend_hurst_lo: dec!(0.50),
+            weak_trend_hurst_hi: dec!(0.60),
+            choppy_ci: dec!(61.8),
+            choppy_adx: dec!(20),
+            ranging_hurst: dec!(0.45),
+            ranging_tight_bb_pctile: dec!(0.30),
+            ranging_wide_bb_pctile: dec!(0.60),
+            ranging_tight_ci: dec!(55),
+        }
+    }
 }
 
 /// Regime Classifier — streaming, one bar at a time.
@@ -37,10 +91,15 @@ pub struct RegimeClassifier {
     bb_pctile: BBWidthPercentile,
     ci: ChoppinessIndex,
     squeeze_count: u32,
+    thresholds: RegimeThresholds,
 }
 
 impl RegimeClassifier {
     pub fn new() -> Self {
+        Self::with_thresholds(RegimeThresholds::default())
+    }
+
+    pub fn with_thresholds(thresholds: RegimeThresholds) -> Self {
         Self {
             ema20: EMA::new(20),
             ema200: EMA::new(200),
@@ -52,7 +111,12 @@ impl RegimeClassifier {
             bb_pctile: BBWidthPercentile::new(100),
             ci: ChoppinessIndex::new(14),
             squeeze_count: 0,
+            thresholds,
         }
+    }
+
+    pub fn thresholds(&self) -> &RegimeThresholds {
+        &self.thresholds
     }
 
     /// Process one closed bar. Returns `None` during warmup (first ~200 bars),
@@ -112,67 +176,61 @@ impl RegimeClassifier {
     /// Classify the current market regime. Returns (regime, confidence).
     /// Rules are applied in strict priority order.
     fn classify(&self, inputs: RegimeInputs) -> (Regime9, Decimal) {
-        // 1. BreakoutPending: BB squeeze for 10+ consecutive bars
-        if self.squeeze_count >= 10 {
+        let t = &self.thresholds;
+
+        if self.squeeze_count >= t.squeeze_bars_for_breakout {
             return (Regime9::BreakoutPending, dec!(0.75));
         }
 
-        // 2. Choppy: CI > 61.8 and ADX < 20
-        if inputs.ci > dec!(61.8) && inputs.adx < dec!(20) {
+        if inputs.ci > t.choppy_ci && inputs.adx < t.choppy_adx {
             return (Regime9::Choppy, dec!(0.70));
         }
 
-        // 3. StrongTrendUp: ADX > 25, Hurst > 0.60, close > EMA20 > EMA200
-        if inputs.adx > dec!(25)
-            && inputs.hurst > dec!(0.60)
+        if inputs.adx > t.strong_trend_adx
+            && inputs.hurst > t.strong_trend_hurst
             && inputs.close > inputs.ema20
             && inputs.ema20 > inputs.ema200
         {
             return (Regime9::StrongTrendUp, dec!(0.80));
         }
 
-        // 4. StrongTrendDown: ADX > 25, Hurst > 0.60, close < EMA20 < EMA200
-        if inputs.adx > dec!(25)
-            && inputs.hurst > dec!(0.60)
+        if inputs.adx > t.strong_trend_adx
+            && inputs.hurst > t.strong_trend_hurst
             && inputs.close < inputs.ema20
             && inputs.ema20 < inputs.ema200
         {
             return (Regime9::StrongTrendDown, dec!(0.80));
         }
 
-        // 5. WeakTrendUp: ADX 18-27, Hurst 0.50-0.60, close > EMA200
-        //    Widened from ADX 20-25 / Hurst 0.52-0.60 to capture borderline
-        //    trending conditions that would otherwise fall to Transitioning.
-        if inputs.adx >= dec!(18)
-            && inputs.adx <= dec!(27)
-            && inputs.hurst >= dec!(0.50)
-            && inputs.hurst <= dec!(0.60)
+        if inputs.adx >= t.weak_trend_adx_lo
+            && inputs.adx <= t.weak_trend_adx_hi
+            && inputs.hurst >= t.weak_trend_hurst_lo
+            && inputs.hurst <= t.weak_trend_hurst_hi
             && inputs.close > inputs.ema200
         {
             return (Regime9::WeakTrendUp, dec!(0.55));
         }
 
-        // 6. WeakTrendDown: ADX 18-27, Hurst 0.50-0.60, close < EMA200
-        if inputs.adx >= dec!(18)
-            && inputs.adx <= dec!(27)
-            && inputs.hurst >= dec!(0.50)
-            && inputs.hurst <= dec!(0.60)
+        if inputs.adx >= t.weak_trend_adx_lo
+            && inputs.adx <= t.weak_trend_adx_hi
+            && inputs.hurst >= t.weak_trend_hurst_lo
+            && inputs.hurst <= t.weak_trend_hurst_hi
             && inputs.close < inputs.ema200
         {
             return (Regime9::WeakTrendDown, dec!(0.55));
         }
 
-        // 7. RangingTight: Hurst < 0.45, BB width pctile < 0.30, CI > 55
-        if inputs.hurst < dec!(0.45) && inputs.bb_pctile < dec!(0.30) && inputs.ci > dec!(55) {
+        if inputs.hurst < t.ranging_hurst
+            && inputs.bb_pctile < t.ranging_tight_bb_pctile
+            && inputs.ci > t.ranging_tight_ci
+        {
             return (Regime9::RangingTight, dec!(0.65));
         }
 
-        // 8. RangingWide: Hurst < 0.45, BB width pctile < 0.60
-        if inputs.hurst < dec!(0.45) && inputs.bb_pctile < dec!(0.60) {
+        if inputs.hurst < t.ranging_hurst && inputs.bb_pctile < t.ranging_wide_bb_pctile {
             return (Regime9::RangingWide, dec!(0.60));
         }
 
-        // 9. Default: Transitioning (low confidence catchall)
         (Regime9::Transitioning, dec!(0.25))
     }
 

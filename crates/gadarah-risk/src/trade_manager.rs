@@ -216,4 +216,72 @@ impl TradeManager {
     pub fn config(&self) -> &TradeManagerConfig {
         &self.config
     }
+
+    /// Emit `CloseAll` for every open position with a uniform reason.
+    ///
+    /// Caller uses this to translate a single `ProtectiveClose` event into a
+    /// batch of exit intents — one per open position — that the order path
+    /// then sends to the broker. The intents are yielded in input order.
+    pub fn flatten_all(&self, positions: &[OpenPosition], reason: &str) -> Vec<(u64, TradeAction)> {
+        positions
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    TradeAction::CloseAll {
+                        reason: reason.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod flatten_tests {
+    use super::*;
+    use gadarah_core::HeadId;
+    use rust_decimal_macros::dec;
+
+    fn pos(id: u64) -> OpenPosition {
+        OpenPosition {
+            id,
+            entry: dec!(1.0),
+            current_price: dec!(1.0),
+            sl: dec!(0.99),
+            tp: dec!(1.02),
+            tp2: None,
+            lots: dec!(0.1),
+            direction: Direction::Buy,
+            opened_at: 0,
+            head: HeadId::Momentum,
+            max_favorable_excursion: dec!(0),
+            partial_taken: false,
+            breakeven_set: false,
+            trailing_active: false,
+        }
+    }
+
+    #[test]
+    fn flatten_all_emits_one_close_per_position() {
+        let tm = TradeManager::new(TradeManagerConfig::default());
+        let positions = vec![pos(1), pos(2), pos(3)];
+        let intents = tm.flatten_all(&positions, "DailyStopReached");
+        assert_eq!(intents.len(), 3);
+        for (pid, action) in &intents {
+            match action {
+                TradeAction::CloseAll { reason } => {
+                    assert_eq!(reason, "DailyStopReached");
+                    assert!(*pid >= 1 && *pid <= 3);
+                }
+                _ => panic!("flatten_all must emit CloseAll only"),
+            }
+        }
+    }
+
+    #[test]
+    fn flatten_all_on_empty_is_empty() {
+        let tm = TradeManager::new(TradeManagerConfig::default());
+        assert!(tm.flatten_all(&[], "whatever").is_empty());
+    }
 }

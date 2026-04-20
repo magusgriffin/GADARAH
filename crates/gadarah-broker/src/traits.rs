@@ -1,5 +1,6 @@
 use crate::error::BrokerError;
 use crate::types::*;
+use gadarah_risk::gate::ExecutionWitness;
 
 // ---------------------------------------------------------------------------
 // Broker trait — implemented by MockBroker (backtest) and CTraderBroker (live)
@@ -9,7 +10,15 @@ use crate::types::*;
 /// Synchronous API for the hot path (strategy evaluation is sync per the plan).
 pub trait Broker {
     /// Place a market or pending order.
-    fn send_order(&mut self, req: &OrderRequest) -> Result<FillReport, BrokerError>;
+    ///
+    /// The `_witness` argument is a zero-sized token issued only by
+    /// `gadarah_risk::gate::PreTradeGate::evaluate`. This makes un-gated order
+    /// dispatch a compile-time error instead of a runtime one.
+    fn send_order(
+        &mut self,
+        req: &OrderRequest,
+        _witness: &ExecutionWitness,
+    ) -> Result<FillReport, BrokerError>;
 
     /// Modify SL/TP on an open position.
     fn modify_position(&mut self, req: &ModifyRequest) -> Result<(), BrokerError>;

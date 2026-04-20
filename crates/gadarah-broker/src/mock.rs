@@ -170,7 +170,11 @@ impl MockBroker {
 }
 
 impl Broker for MockBroker {
-    fn send_order(&mut self, req: &OrderRequest) -> Result<FillReport, BrokerError> {
+    fn send_order(
+        &mut self,
+        req: &OrderRequest,
+        _witness: &gadarah_risk::gate::ExecutionWitness,
+    ) -> Result<FillReport, BrokerError> {
         let spec = self
             .symbols
             .get(&req.symbol)
@@ -215,6 +219,7 @@ impl Broker for MockBroker {
             position_id: id,
             fill_price,
             filled_lots: req.lots,
+            requested_lots: req.lots,
             fill_time: self.current_time,
             slippage_pips: self.config.slippage_pips,
             commission,
@@ -454,7 +459,7 @@ mod tests {
                 stop_loss: dec!(1.09800),
                 take_profit: dec!(1.10400),
                 comment: "test".into(),
-            })
+            }, &gadarah_risk::gate::ExecutionWitness::for_simulation())
             .unwrap();
 
         assert!(fill.fill_price > dec!(1.10012)); // ask + slippage
@@ -489,7 +494,7 @@ mod tests {
                 stop_loss: dec!(1.09800),
                 take_profit: dec!(1.10400),
                 comment: "test".into(),
-            })
+            }, &gadarah_risk::gate::ExecutionWitness::for_simulation())
             .unwrap();
 
         // Price drops to SL
@@ -515,7 +520,7 @@ mod tests {
                 stop_loss: dec!(1.09800),
                 take_profit: dec!(1.10400),
                 comment: "test".into(),
-            })
+            }, &gadarah_risk::gate::ExecutionWitness::for_simulation())
             .unwrap();
 
         broker
@@ -552,7 +557,7 @@ mod tests {
                 stop_loss: dec!(1.09800),
                 take_profit: dec!(1.10400),
                 comment: "test".into(),
-            })
+            }, &gadarah_risk::gate::ExecutionWitness::for_simulation())
             .unwrap();
 
         let err = broker

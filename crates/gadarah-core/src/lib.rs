@@ -1,7 +1,9 @@
 pub mod decimal_math;
+pub mod exit;
 pub mod heads;
 pub mod htf_bias;
 pub mod indicators;
+pub mod meta;
 pub mod regime;
 pub mod session;
 pub mod types;
@@ -14,8 +16,14 @@ pub use types::{
 
 pub use decimal_math::{decimal_ln, decimal_sqrt};
 
+pub use exit::{ExitState, TrailConfig, TrailDecision, TrailMachine};
 pub use htf_bias::{HtfBias, HtfBiasFilter};
-pub use regime::RegimeClassifier;
+pub use meta::{
+    Ensemble, MtfConfirm, MtfDecision, OrderFlowFeatures, OrderFlowTracker, RankedSignal,
+    RegimeGate, RegimeGateDecision, ScoredSegment, SegmentStatsProvider, SegmentStatsSnapshot,
+    SignalScorer, VolAdjustedStops,
+};
+pub use regime::{RegimeClassifier, RegimeThresholds};
 
 pub use heads::{
     AsianRangeHead, BreakoutHead, GridHead, Head, MomentumHead, NewsHead, ScalpM1Head, ScalpM5Head,

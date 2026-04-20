@@ -193,7 +193,7 @@ pub fn run_replay(
             Decimal::ZERO
         };
         if dd_pct >= config.max_dd_limit_pct {
-            kill_switch.activate("max DD breached", bar.timestamp);
+            kill_switch.activate(gadarah_risk::KillReason::TotalDD, bar.timestamp);
             continue;
         }
 
@@ -249,6 +249,9 @@ pub fn run_replay(
 
                 // Size the trade
                 let sl_distance = (signal.entry - signal.stop_loss).abs();
+                // Phase A5: backtest costs = current spread + configured commission per lot.
+                let cost_per_lot_usd = config.mock_config.spread_pips * config.pip_value_per_lot
+                    + config.mock_config.commission_per_lot;
                 let lots = match calculate_lots(&SizingInputs {
                     risk_pct,
                     account_equity,
@@ -258,21 +261,31 @@ pub fn run_replay(
                     min_lot: dec!(0.01),
                     max_lot: dec!(50.0),
                     lot_step: dec!(0.01),
+                    cost_per_lot_usd,
+                    // Margin cap disabled in backtest until A4 surfaces firm
+                    // leverage/contract-size metadata into ReplayConfig.
+                    contract_size: Decimal::ZERO,
+                    price: Decimal::ZERO,
+                    leverage: Decimal::ZERO,
+                    max_margin_util_pct: Decimal::ZERO,
                 }) {
                     Ok(l) => l,
                     Err(_) => continue,
                 };
 
-                // Execute via mock broker
-                let fill = match broker.send_order(&OrderRequest {
-                    symbol: config.symbol.clone(),
-                    direction: signal.direction,
-                    lots,
-                    order_type: OrderType::Market,
-                    stop_loss: signal.stop_loss,
-                    take_profit: signal.take_profit,
-                    comment: format!("{:?}", signal.head),
-                }) {
+                // Execute via mock broker. Replayer bypasses the live gate.
+                let fill = match broker.send_order(
+                    &OrderRequest {
+                        symbol: config.symbol.clone(),
+                        direction: signal.direction,
+                        lots,
+                        order_type: OrderType::Market,
+                        stop_loss: signal.stop_loss,
+                        take_profit: signal.take_profit,
+                        comment: format!("{:?}", signal.head),
+                    },
+                    &gadarah_risk::gate::ExecutionWitness::for_simulation(),
+                ) {
                     Ok(f) => f,
                     Err(e) => {
                         debug!("Order rejected: {e}");

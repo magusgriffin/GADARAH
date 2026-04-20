@@ -10,6 +10,18 @@ use gadarah_core::{Direction, HeadId, RegimeSignal9};
 
 use crate::config::{FirmConfig, GadarahConfig};
 
+/// RFC-4180 field escape: wrap in quotes (with interior `"` doubled) iff the
+/// field contains a comma, quote, or line break; otherwise emit unchanged.
+fn csv_escape(field: &str) -> String {
+    let needs_quote = field.contains(['"', ',', '\n', '\r']);
+    if needs_quote {
+        let escaped = field.replace('"', "\"\"");
+        format!("\"{}\"", escaped)
+    } else {
+        field.to_string()
+    }
+}
+
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 1000;
 
@@ -102,6 +114,92 @@ pub struct BacktestResult {
     pub trades: Vec<TradeRecord>,
 }
 
+/// Alert / toast shown in the status header and the alerts feed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alert {
+    pub timestamp: i64,
+    pub severity: AlertSeverity,
+    pub title: String,
+    pub body: String,
+    pub dismissed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    Danger,
+}
+
+/// Snapshot of the daily-PnL engine's state, rendered as a coloured pill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DayStateView {
+    Normal,
+    Cruising,
+    Protecting,
+    Stopped,
+}
+
+impl DayStateView {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Cruising => "CRUISING",
+            Self::Protecting => "PROTECTING",
+            Self::Stopped => "STOPPED",
+        }
+    }
+}
+
+/// One cell of a symbol×symbol correlation grid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelationCell {
+    pub symbol_a: String,
+    pub symbol_b: String,
+    pub correlation: f64,
+    pub sample_size: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CorrelationMatrix {
+    pub updated_at: i64,
+    pub cells: Vec<CorrelationCell>,
+}
+
+/// One entry in the trade journal — richer than `TradeRecord` so the user
+/// can post-hoc review every decision path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub trade_id: u64,
+    pub opened_at: i64,
+    pub closed_at: i64,
+    pub symbol: String,
+    pub head: HeadId,
+    pub direction: Direction,
+    pub regime: String,
+    pub session: String,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub lots: Decimal,
+    pub pnl: Decimal,
+    pub r_multiple: Decimal,
+    pub slippage_pips: Decimal,
+    pub entry_reason: String,
+    pub exit_reason: String,
+    pub posterior_p: Option<f64>,
+    pub user_tag: Option<String>,
+    pub user_note: Option<String>,
+}
+
+/// Gate-rejection event captured for debugging and audit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateReject {
+    pub timestamp: i64,
+    pub symbol: String,
+    pub head: HeadId,
+    pub reason: String,
+}
+
 /// Log entry with level
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -131,7 +229,12 @@ impl LogLevel {
     }
 }
 
-/// Broker connection status
+/// Broker socket / auth status.
+///
+/// This is deliberately *not* a liveness signal for the market feed — a
+/// healthy `ConnectedLive` can still be stale if ticks stop flowing.  Pair
+/// with `SharedState::stale_ms` (freshness of the last received tick) via
+/// `SharedState::feed_healthy()` when rendering connection indicators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionStatus {
     Disconnected,
@@ -198,11 +301,27 @@ pub struct SharedState {
     pub max_drawdown_pct: Decimal,
     pub sharpe_ratio: Decimal,
     pub expectancy_r: Decimal,
+
+    // Operational surfacing (Workstream C2)
+    pub alerts: VecDeque<Alert>,
+    /// Milliseconds since the last market tick — feed freshness, independent
+    /// of socket state.  `feed_healthy()` combines this with
+    /// `connection_status`.
+    pub stale_ms: u64,
+    pub correlation_matrix: Option<CorrelationMatrix>,
+    pub trade_journal: VecDeque<JournalEntry>,
+    pub daily_state: DayStateView,
+    pub gate_rejections: VecDeque<GateReject>,
 }
+
+const MAX_ALERTS: usize = 100;
+const MAX_JOURNAL: usize = 1000;
+const MAX_GATE_REJECTIONS: usize = 50;
 
 impl Default for SharedState {
     fn default() -> Self {
         Self {
+            // Account
             balance: dec!(10000.0),
             equity: dec!(10000.0),
             free_margin: dec!(10000.0),
@@ -211,36 +330,54 @@ impl Default for SharedState {
             total_pnl: Decimal::ZERO,
             total_pnl_pct: Decimal::ZERO,
             starting_balance: dec!(10000.0),
+            // Positions
             positions: Vec::new(),
+            // Regime tracking
             regime_by_symbol: std::collections::HashMap::new(),
             active_heads: Vec::new(),
+            // Kill switch
             kill_switch_active: false,
             kill_switch_reason: None,
             kill_switch_cooldown: None,
+            // Configuration
             config: GadarahConfig::default(),
             selected_firm: None,
             firm_config: None,
             available_firms: Vec::new(),
+            // Connection
             connection_status: ConnectionStatus::Disconnected,
+            // Logs
             logs: VecDeque::new(),
             log_filter: LogLevel::Info,
+            // Backtest
             last_backtest: None,
             backtest_running: false,
+            // Performance history
             equity_curve: Vec::new(),
             trade_history: Vec::new(),
+            // Price chart
             price_bars: Vec::new(),
             chart_symbol: String::new(),
             trade_markers: Vec::new(),
+            // Stats
             total_trades: 0,
             win_rate: Decimal::ZERO,
             profit_factor: Decimal::ZERO,
             max_drawdown_pct: Decimal::ZERO,
             sharpe_ratio: Decimal::ZERO,
             expectancy_r: Decimal::ZERO,
+            // Operational surfacing (Workstream C2)
+            alerts: VecDeque::new(),
+            stale_ms: 0,
+            correlation_matrix: None,
+            trade_journal: VecDeque::new(),
+            daily_state: DayStateView::Normal,
+            gate_rejections: VecDeque::new(),
         }
     }
 }
 
+// ── Logs ──────────────────────────────────────────────────────────────────────
 impl SharedState {
     /// Add a log entry
     pub fn add_log(&mut self, level: LogLevel, message: impl Into<String>) {
@@ -262,7 +399,10 @@ impl SharedState {
             .filter(|l| l.level as u8 >= self.log_filter as u8)
             .collect()
     }
+}
 
+// ── Performance history & price chart ─────────────────────────────────────────
+impl SharedState {
     /// Update equity curve point
     pub fn add_equity_point(&mut self, timestamp: i64, equity: Decimal) {
         self.equity_curve.push(EquityPoint {
@@ -282,7 +422,107 @@ impl SharedState {
             self.price_bars.remove(0);
         }
     }
+}
 
+// ── Operational surfacing (C2): alerts, journal, gate rejections ──────────────
+impl SharedState {
+    /// True only when the broker is connected *and* the feed is fresh.  Use
+    /// this as the single source of truth for the top-bar health indicator;
+    /// `stale_ms` and `connection_status` alone each miss half the failure
+    /// modes (a live socket with no ticks, or a reconnect mid-flight).
+    pub fn feed_healthy(&self) -> bool {
+        matches!(
+            self.connection_status,
+            ConnectionStatus::ConnectedDemo | ConnectionStatus::ConnectedLive
+        ) && self.stale_ms < 500
+    }
+
+    /// Push an alert. Older alerts are dropped once the cap is reached.
+    pub fn push_alert(&mut self, alert: Alert) {
+        self.alerts.push_back(alert);
+        while self.alerts.len() > MAX_ALERTS {
+            self.alerts.pop_front();
+        }
+    }
+
+    /// Mark an alert as dismissed (index into the current alerts deque).
+    pub fn dismiss_alert(&mut self, index: usize) {
+        if let Some(alert) = self.alerts.get_mut(index) {
+            alert.dismissed = true;
+        }
+    }
+
+    /// Count of unread (non-dismissed) alerts.
+    pub fn unread_alerts(&self) -> usize {
+        self.alerts.iter().filter(|a| !a.dismissed).count()
+    }
+
+    /// Push a journal entry, capped.
+    pub fn push_journal(&mut self, entry: JournalEntry) {
+        self.trade_journal.push_back(entry);
+        while self.trade_journal.len() > MAX_JOURNAL {
+            self.trade_journal.pop_front();
+        }
+    }
+
+    /// Push a gate-rejection event, capped.
+    pub fn push_gate_rejection(&mut self, reject: GateReject) {
+        self.gate_rejections.push_back(reject);
+        while self.gate_rejections.len() > MAX_GATE_REJECTIONS {
+            self.gate_rejections.pop_front();
+        }
+    }
+
+    /// Export the trade journal as a CSV string (header + rows).
+    ///
+    /// Fields follow RFC-4180: any value containing `,`, `"`, `\n`, or `\r` is
+    /// wrapped in quotes with interior quotes doubled.  Importers round-trip
+    /// the original text — notes like `"hit 1,234 level"` survive intact.
+    pub fn journal_csv(&self) -> String {
+        let mut out = String::from(
+            "trade_id,opened_at,closed_at,symbol,head,direction,regime,session,\
+             entry,exit,lots,pnl,r_mult,slippage_pips,entry_reason,exit_reason,\
+             posterior_p,tag,note\n",
+        );
+        for e in &self.trade_journal {
+            let dir = match e.direction {
+                Direction::Buy => "BUY",
+                Direction::Sell => "SELL",
+            };
+            let posterior = e
+                .posterior_p
+                .map(|p| format!("{:.4}", p))
+                .unwrap_or_default();
+            let row: [String; 19] = [
+                e.trade_id.to_string(),
+                e.opened_at.to_string(),
+                e.closed_at.to_string(),
+                csv_escape(&e.symbol),
+                csv_escape(&format!("{:?}", e.head)),
+                dir.to_string(),
+                csv_escape(&e.regime),
+                csv_escape(&e.session),
+                e.entry_price.to_string(),
+                e.exit_price.to_string(),
+                e.lots.to_string(),
+                e.pnl.to_string(),
+                e.r_multiple.to_string(),
+                e.slippage_pips.to_string(),
+                csv_escape(&e.entry_reason),
+                csv_escape(&e.exit_reason),
+                posterior,
+                csv_escape(e.user_tag.as_deref().unwrap_or("")),
+                csv_escape(e.user_note.as_deref().unwrap_or("")),
+            ];
+            out.push_str(&row.join(","));
+            out.push('\n');
+        }
+        out
+    }
+}
+
+// ── Aggregate stats derived from trade + equity history ───────────────────────
+impl SharedState {
     /// Update stats from trade history
     pub fn update_stats(&mut self) {
         if self.trade_history.is_empty() {
@@ -413,4 +653,149 @@ pub type AppState = Arc<Mutex<SharedState>>;
 
 pub fn create_app_state() -> AppState {
     Arc::new(Mutex::new(SharedState::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alert(severity: AlertSeverity, body: &str) -> Alert {
+        Alert {
+            timestamp: 0,
+            severity,
+            title: "t".into(),
+            body: body.into(),
+            dismissed: false,
+        }
+    }
+
+    #[test]
+    fn alerts_capped_at_max() {
+        let mut s = SharedState::default();
+        for i in 0..(MAX_ALERTS + 5) {
+            s.push_alert(alert(AlertSeverity::Info, &i.to_string()));
+        }
+        assert_eq!(s.alerts.len(), MAX_ALERTS);
+        // Earliest entries dropped
+        assert_eq!(s.alerts.front().unwrap().body, "5");
+    }
+
+    #[test]
+    fn dismiss_alert_sets_flag() {
+        let mut s = SharedState::default();
+        s.push_alert(alert(AlertSeverity::Danger, "x"));
+        s.dismiss_alert(0);
+        assert!(s.alerts[0].dismissed);
+        assert_eq!(s.unread_alerts(), 0);
+    }
+
+    #[test]
+    fn gate_rejections_capped() {
+        let mut s = SharedState::default();
+        for i in 0..(MAX_GATE_REJECTIONS + 3) {
+            s.push_gate_rejection(GateReject {
+                timestamp: i as i64,
+                symbol: "EURUSD".into(),
+                head: HeadId::Momentum,
+                reason: "r".into(),
+            });
+        }
+        assert_eq!(s.gate_rejections.len(), MAX_GATE_REJECTIONS);
+    }
+
+    #[test]
+    fn journal_csv_emits_header_and_rows() {
+        let mut s = SharedState::default();
+        s.push_journal(JournalEntry {
+            trade_id: 1,
+            opened_at: 100,
+            closed_at: 200,
+            symbol: "EURUSD".into(),
+            head: HeadId::Momentum,
+            direction: Direction::Buy,
+            regime: "StrongTrendUp".into(),
+            session: "London".into(),
+            entry_price: dec!(1.1000),
+            exit_price: dec!(1.1050),
+            lots: dec!(0.10),
+            pnl: dec!(50),
+            r_multiple: dec!(1.5),
+            slippage_pips: dec!(0.2),
+            entry_reason: "test".into(),
+            exit_reason: "tp".into(),
+            posterior_p: Some(0.65),
+            user_tag: None,
+            user_note: None,
+        });
+        let csv = s.journal_csv();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("trade_id,"));
+        assert!(lines[1].contains("EURUSD"));
+        assert!(lines[1].contains("BUY"));
+    }
+
+    #[test]
+    fn day_state_labels_are_human_readable() {
+        assert_eq!(DayStateView::Normal.label(), "NORMAL");
+        assert_eq!(DayStateView::Stopped.label(), "STOPPED");
+    }
+
+    #[test]
+    fn feed_healthy_requires_both_connection_and_freshness() {
+        let mut s = SharedState::default();
+        // Default: Disconnected → unhealthy regardless of stale_ms.
+        assert!(!s.feed_healthy());
+        s.stale_ms = 0;
+        assert!(!s.feed_healthy());
+        // Connected + fresh → healthy.
+        s.connection_status = ConnectionStatus::ConnectedLive;
+        s.stale_ms = 100;
+        assert!(s.feed_healthy());
+        // Connected but stale → unhealthy.
+        s.stale_ms = 1500;
+        assert!(!s.feed_healthy());
+        // Reconnecting → unhealthy even with a stale reading of 0.
+        s.connection_status = ConnectionStatus::Connecting;
+        s.stale_ms = 0;
+        assert!(!s.feed_healthy());
+    }
+
+    #[test]
+    fn csv_escape_handles_commas_quotes_and_newlines() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("has,comma"), "\"has,comma\"");
+        assert_eq!(csv_escape("has\"quote"), "\"has\"\"quote\"");
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn journal_csv_preserves_commas_in_notes() {
+        let mut s = SharedState::default();
+        s.push_journal(JournalEntry {
+            trade_id: 7,
+            opened_at: 0,
+            closed_at: 0,
+            symbol: "EURUSD".into(),
+            head: HeadId::Momentum,
+            direction: Direction::Sell,
+            regime: "ChoppyHiVol".into(),
+            session: "NY".into(),
+            entry_price: dec!(1.1000),
+            exit_price: dec!(1.0900),
+            lots: dec!(0.05),
+            pnl: dec!(-50),
+            r_multiple: dec!(-1),
+            slippage_pips: dec!(0),
+            entry_reason: "broke 1,234 level".into(),
+            exit_reason: "stop".into(),
+            posterior_p: None,
+            user_tag: None,
+            user_note: Some("line1\nline2, with comma".into()),
+        });
+        let csv = s.journal_csv();
+        // The note with a newline stays one CSV row (newline is inside quotes).
+        assert!(csv.contains("\"broke 1,234 level\""));
+        assert!(csv.contains("\"line1\nline2, with comma\""));
+    }
 }

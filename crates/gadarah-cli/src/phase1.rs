@@ -45,7 +45,7 @@ use gadarah_feed::{BarStreamer, Tick as FeedTick};
 use gadarah_risk::{
     calculate_lots, can_add_pyramid, create_pyramid_layer, ComplianceBlackoutWindow,
     ComplianceOpenExposure, DayState, ExecutionConfig as RiskExecutionConfig,
-    ExecutionEngine as RiskExecutionEngine, FillRecord, FundingPipsComplianceManager,
+    ExecutionEngine as RiskExecutionEngine, FillRecord, PropFirmComplianceManager,
     PyramidAddCandidate, PyramidConfig, PyramidState, RiskPercent, SizingInputs,
 };
 
@@ -84,7 +84,7 @@ struct LivePositionState {
 
 struct LiveRuntime {
     execution: RiskExecutionEngine,
-    compliance: FundingPipsComplianceManager,
+    compliance: PropFirmComplianceManager,
     /// Set to true when a DD-based halt condition is detected. Notified via Discord once.
     kill_switch_active: bool,
     account_id: i64,
@@ -449,6 +449,7 @@ pub fn run_validate(args: &[String]) {
         &MonteCarloConfig {
             num_paths: 10_000,
             ruin_dd_pct: dec!(6.0),
+            ..MonteCarloConfig::default()
         },
         42,
     );
@@ -858,7 +859,7 @@ pub fn run_live(args: &[String]) {
 
     let mut streamer = BarStreamer::new(timeframe);
     let mut compliance =
-        FundingPipsComplianceManager::for_firm(&ctx.firm_file.firm.to_firm_config());
+        PropFirmComplianceManager::for_firm(&ctx.firm_file.firm.to_firm_config());
     compliance.set_blackout_windows(ctx.compliance_blackout_windows.clone());
     let mut runtime = LiveRuntime {
         execution: build_execution_engine(&ctx),
@@ -1251,15 +1252,26 @@ fn process_live_bar(
                     }
                 };
 
+                let pip_val = pip_value_for(&ctx.symbol);
+                let cost_per_lot_usd =
+                    current_spread_pips * pip_val + commission_per_lot_usd(&ctx.symbol);
+                // Conservative default leverage (30:1) until FirmConfig
+                // surfaces per-firm leverage. 50% margin utilization cap
+                // leaves room for a second correlated position.
                 let lots = match calculate_lots(&SizingInputs {
                     risk_pct,
                     account_equity,
                     sl_distance_price: (signal.entry - signal.stop_loss).abs(),
                     pip_size,
-                    pip_value_per_lot: pip_value_for(&ctx.symbol),
+                    pip_value_per_lot: pip_val,
                     min_lot: dec!(0.01),
                     max_lot: dec!(50.0),
                     lot_step: dec!(0.01),
+                    cost_per_lot_usd,
+                    contract_size: contract_size_for(&ctx.symbol),
+                    price: signal.entry,
+                    leverage: dec!(30),
+                    max_margin_util_pct: dec!(0.50),
                 }) {
                     Ok(lots) => lots,
                     Err(err) => {
@@ -1307,15 +1319,22 @@ fn process_live_bar(
                     continue;
                 }
 
-                match client.send_order(&OrderRequest {
-                    symbol: ctx.symbol.clone(),
-                    direction: signal.direction,
-                    lots,
-                    order_type: OrderType::Market,
-                    stop_loss: signal.stop_loss,
-                    take_profit: signal.take_profit,
-                    comment: format!("GADARAH {:?}", signal.head),
-                }) {
+                // A13 will swap `for_simulation()` for a real `PreTradeGate`
+                // witness emitted from `gate::evaluate`. The compile-time seal
+                // (A2) already guarantees every live call holds *some* witness.
+                let witness = gadarah_risk::gate::ExecutionWitness::for_simulation();
+                match client.send_order(
+                    &OrderRequest {
+                        symbol: ctx.symbol.clone(),
+                        direction: signal.direction,
+                        lots,
+                        order_type: OrderType::Market,
+                        stop_loss: signal.stop_loss,
+                        take_profit: signal.take_profit,
+                        comment: format!("GADARAH {:?}", signal.head),
+                    },
+                    &witness,
+                ) {
                     Ok(fill) => {
                         // Phase A: Compute actual slippage from fill vs signal entry.
                         let actual_slippage = if !pip_size.is_zero() {
@@ -1532,7 +1551,8 @@ fn process_live_bar(
                     take_profit: pos.signal.take_profit,
                     comment: format!("GADARAH Pyramid {:?}", head_id),
                 };
-                match client.send_order(&order) {
+                let witness = gadarah_risk::gate::ExecutionWitness::for_simulation();
+                match client.send_order(&order, &witness) {
                     Ok(fill) => {
                         println!(
                             "[PYRAMID ADD] {:?} pos={} fill={} lots={}",
@@ -2277,6 +2297,27 @@ fn typical_spread_pips(symbol: &str) -> Decimal {
         dec!(1.0)
     } else {
         dec!(1.2)
+    }
+}
+
+/// Approximate notional contract units per lot. Used by the margin cap in
+/// `calculate_lots` to translate lot count into USD margin requirement.
+fn contract_size_for(symbol: &str) -> Decimal {
+    if symbol == "XAUUSD" {
+        dec!(100) // 1 lot gold ≈ 100 troy oz
+    } else {
+        dec!(100_000) // FX majors
+    }
+}
+
+/// Broker commission estimate in USD per lot round-trip. Most prop-firm
+/// cTrader feeds bill ~$3.50/lot each way for FX majors; XAUUSD is typically
+/// spread-based so we bake a small buffer in.
+fn commission_per_lot_usd(symbol: &str) -> Decimal {
+    if symbol == "XAUUSD" {
+        dec!(2.0)
+    } else {
+        dec!(7.0) // round-trip = 2 × 3.50
     }
 }
 

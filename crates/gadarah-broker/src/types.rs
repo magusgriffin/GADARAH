@@ -53,10 +53,30 @@ pub enum OrderType {
 pub struct FillReport {
     pub position_id: u64,
     pub fill_price: Decimal,
+    /// Volume actually filled by the broker (lots).
     pub filled_lots: Decimal,
+    /// Volume the order originally requested. If `requested_lots > filled_lots`
+    /// the fill is partial; callers must scale their bracket (SL/TP)
+    /// quantities accordingly and re-sync equity-dependent state.
+    pub requested_lots: Decimal,
     pub fill_time: i64,
     pub slippage_pips: Decimal,
     pub commission: Decimal,
+}
+
+impl FillReport {
+    /// Returns true when the broker filled less than requested.
+    pub fn is_partial(&self) -> bool {
+        self.filled_lots < self.requested_lots
+    }
+
+    /// Fill ratio in [0, 1]. Zero on a reject, one on a full fill.
+    pub fn fill_ratio(&self) -> Decimal {
+        if self.requested_lots.is_zero() {
+            return Decimal::ZERO;
+        }
+        (self.filled_lots / self.requested_lots).min(Decimal::ONE)
+    }
 }
 
 // ---------------------------------------------------------------------------
