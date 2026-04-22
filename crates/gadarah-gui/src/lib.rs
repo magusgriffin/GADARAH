@@ -4,9 +4,11 @@
 //! the GADARAH algorithmic trading system.
 
 pub mod config;
+pub mod oracle;
 pub mod state;
 pub mod theme;
 pub mod ui;
+pub mod widgets;
 
 pub use config::GadarahConfig;
 pub use state::{

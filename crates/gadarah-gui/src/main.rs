@@ -9,11 +9,16 @@ use egui::RichText;
 
 use gadarah_gui::{
     config::GadarahConfig,
+    oracle::{OracleConfig, OracleHandle, OracleReply},
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
     ui::{
-        BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, PayoutPanel, PerformancePanel,
-        PriceChartPanel,
+        BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, OraclePanel, PayoutPanel,
+        PerformancePanel, PriceChartPanel, SessionsPanel,
+    },
+    widgets::{
+        demo_banner,
+        mascot::{self, MascotMood, MascotState, MascotSubsystem},
     },
 };
 
@@ -24,11 +29,22 @@ struct GadarahApp {
     config_panel: ConfigPanel,
     performance_panel: PerformancePanel,
     payout_panel: PayoutPanel,
+    oracle_panel: OraclePanel,
+    oracle_cfg: OracleConfig,
+    oracle: OracleHandle,
+    mascot: MascotState,
+    /// Confirmation modal for toggling into live trading.
+    pending_live_confirm: bool,
 }
 
 impl GadarahApp {
     fn new(cc: &eframe::CreationContext<'_>, state: AppState) -> Self {
         theme::setup(&cc.egui_ctx);
+        let oracle_cfg = OracleConfig::load();
+        let oracle = OracleHandle::spawn(oracle_cfg.clone());
+        // Kick off an initial status ping so the integrations panel shows
+        // something useful on first paint.
+        let _ = oracle.tx.send(gadarah_gui::oracle::OracleRequest::Ping);
         let mut app = Self {
             state,
             selected_tab: 0,
@@ -36,9 +52,89 @@ impl GadarahApp {
             config_panel: ConfigPanel::new(),
             performance_panel: PerformancePanel::default(),
             payout_panel: PayoutPanel::default(),
+            oracle_panel: OraclePanel::default(),
+            oracle_cfg,
+            oracle,
+            mascot: MascotState::default(),
+            pending_live_confirm: false,
         };
         app.initialize_demo_data();
         app
+    }
+
+    /// Drain any oracle replies, route into panel + mascot.
+    fn pump_oracle(&mut self) {
+        for reply in self.oracle.drain() {
+            match reply {
+                OracleReply::Ready(advice) => {
+                    self.oracle_panel.record_advice(&advice);
+                    self.mascot
+                        .set_mood(MascotSubsystem::Oracle, MascotMood::Watchful);
+                    self.mascot.bubble = Some((
+                        MascotSubsystem::Oracle,
+                        advice.body().chars().take(140).collect(),
+                        mascot::BubbleTone::Divination,
+                    ));
+                }
+                OracleReply::Error(msg) => {
+                    self.oracle_panel.record_error(msg);
+                    self.mascot
+                        .set_mood(MascotSubsystem::Oracle, MascotMood::Warning);
+                }
+                OracleReply::Status { ollama_alive } => {
+                    self.oracle_panel.record_status(ollama_alive);
+                    self.mascot.set_mood(
+                        MascotSubsystem::Oracle,
+                        if ollama_alive {
+                            MascotMood::Calm
+                        } else {
+                            MascotMood::Dim
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Derive per-subsystem mascot moods from the current shared state.
+    fn refresh_mascot_moods(&mut self) {
+        let g = self.state.lock().unwrap();
+        // Herald (feed)
+        let feed_mood = if g.stale_ms > 2000 {
+            MascotMood::Alarmed
+        } else if g.stale_ms > 500 {
+            MascotMood::Warning
+        } else if matches!(g.connection_status, ConnectionStatus::Disconnected) {
+            MascotMood::Dim
+        } else {
+            MascotMood::Calm
+        };
+        // Warden (risk)
+        let warden_mood = if g.kill_switch_active {
+            MascotMood::Alarmed
+        } else {
+            MascotMood::Calm
+        };
+        // Reckoner (challenge clock)
+        let dd_pct_f: f32 = g
+            .max_drawdown_pct
+            .to_string()
+            .parse()
+            .unwrap_or(0.0);
+        let reckoner_mood = if dd_pct_f > 8.0 {
+            MascotMood::Alarmed
+        } else if dd_pct_f > 4.0 {
+            MascotMood::Warning
+        } else {
+            MascotMood::Watchful
+        };
+        drop(g);
+
+        self.mascot.set_mood(MascotSubsystem::MarketFeed, feed_mood);
+        self.mascot.set_mood(MascotSubsystem::RiskGate, warden_mood);
+        self.mascot
+            .set_mood(MascotSubsystem::ChallengeClock, reckoner_mood);
+        // Oracle mood is driven by pump_oracle; Chronicler stays calm v1.
     }
 
     fn initialize_demo_data(&mut self) {
@@ -84,6 +180,29 @@ impl GadarahApp {
 impl eframe::App for GadarahApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+
+        // ── Background pumps ─────────────────────────────────────────────────
+        self.pump_oracle();
+        self.refresh_mascot_moods();
+
+        // ── Demo/Live banner (sits above everything else) ────────────────────
+        let banner_status = self.state.lock().unwrap().connection_status;
+        demo_banner::show(ctx, banner_status);
+
+        // ── Live-trading confirmation (fires once per ConnectedLive session) ─
+        if matches!(banner_status, ConnectionStatus::ConnectedLive)
+            && !self.pending_live_confirm
+            && !self
+                .state
+                .lock()
+                .unwrap()
+                .live_acknowledged
+        {
+            self.pending_live_confirm = true;
+        }
+        if self.pending_live_confirm {
+            show_live_confirm(ctx, self);
+        }
 
         // ── Top bar ──────────────────────────────────────────────────────────
         egui::TopBottomPanel::top("top_bar")
@@ -220,10 +339,12 @@ impl eframe::App for GadarahApp {
                         ui.horizontal_centered(|ui| {
                             let tabs = [
                                 "Dashboard",
+                                "Sessions",
                                 "Chart",
                                 "Performance",
                                 "Backtest",
                                 "Payout",
+                                "Oracle",
                                 "Config",
                                 "Logs",
                             ];
@@ -263,19 +384,120 @@ impl eframe::App for GadarahApp {
                             .inner_margin(egui::Margin::same(16i8))
                             .show(ui, |ui| {
                                 let state = self.state.clone();
+                                let time_secs = ui.ctx().input(|i| i.time) as f32;
                                 match self.selected_tab {
-                                    0 => DashboardPanel::show(ui, &state),
-                                    1 => PriceChartPanel::show(ui, &state),
-                                    2 => self.performance_panel.show(ui, &state),
-                                    3 => self.backtest_panel.show(ui, &state),
-                                    4 => self.payout_panel.show(ui, &state),
-                                    5 => self.config_panel.show(ui, &state),
-                                    6 => LogsPanel::show(ui, &state),
+                                    0 => {
+                                        mascot::show(ui, &self.mascot, time_secs);
+                                        ui.add_space(12.0);
+                                        DashboardPanel::show(ui, &state);
+                                    }
+                                    1 => SessionsPanel::show(ui, &state),
+                                    2 => PriceChartPanel::show(ui, &state),
+                                    3 => self.performance_panel.show(ui, &state),
+                                    4 => self.backtest_panel.show(ui, &state),
+                                    5 => self.payout_panel.show(ui, &state),
+                                    6 => self.oracle_panel.show(
+                                        ui,
+                                        &mut self.oracle_cfg,
+                                        Some(&self.oracle.tx),
+                                    ),
+                                    7 => self.config_panel.show(ui, &state),
+                                    8 => LogsPanel::show(ui, &state),
                                     _ => {}
                                 }
                             });
                     });
             });
+    }
+}
+
+fn show_live_confirm(ctx: &egui::Context, app: &mut GadarahApp) {
+    let mut open = true;
+    let resp = egui::Window::new("")
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .frame(
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(36, 12, 10))
+                .stroke(egui::Stroke::new(2.0, theme::FORGE_CRIMSON))
+                .corner_radius(10u8)
+                .inner_margin(egui::Margin::same(24)),
+        )
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.label(
+                RichText::new("LIVE TRADING DETECTED")
+                    .size(18.0)
+                    .color(theme::FORGE_CRIMSON)
+                    .strong(),
+            );
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(
+                    "The broker connection is reporting a LIVE account. Real money is at risk on every order this session.",
+                )
+                .color(theme::TEXT)
+                .size(13.0),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(
+                    "Verify your firm profile, daily DD limits, and kill-switch settings before proceeding. The Oracle cannot place trades; every order goes through the risk gate.",
+                )
+                .color(theme::MUTED)
+                .size(12.0),
+            );
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("I understand — proceed").color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::FORGE_GOLD_DIM),
+                    )
+                    .clicked()
+                {
+                    let mut g = app.state.lock().unwrap();
+                    g.live_acknowledged = true;
+                    g.add_log(LogLevel::Warn, "User acknowledged live trading mode");
+                    drop(g);
+                    app.pending_live_confirm = false;
+                }
+                ui.add_space(8.0);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Switch back to paper").color(theme::TEXT),
+                        )
+                        .fill(egui::Color32::from_rgb(24, 28, 36)),
+                    )
+                    .clicked()
+                {
+                    // We cannot physically disconnect the broker from the GUI;
+                    // log the request and keep the modal up.
+                    let mut g = app.state.lock().unwrap();
+                    g.add_log(
+                        LogLevel::Warn,
+                        "User requested switch back to paper — disconnect the live broker daemon to comply",
+                    );
+                }
+            });
+        });
+    let _ = resp;
+    if !open {
+        // User clicked the close-x — treat as implicit acknowledgment so the
+        // app is usable, but record that they did not formally confirm.
+        let mut g = app.state.lock().unwrap();
+        g.live_acknowledged = true;
+        g.add_log(
+            LogLevel::Warn,
+            "Live-mode confirmation dismissed without explicit consent",
+        );
+        app.pending_live_confirm = false;
     }
 }
 

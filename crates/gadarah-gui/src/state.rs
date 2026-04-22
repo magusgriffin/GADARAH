@@ -312,6 +312,10 @@ pub struct SharedState {
     pub trade_journal: VecDeque<JournalEntry>,
     pub daily_state: DayStateView,
     pub gate_rejections: VecDeque<GateReject>,
+    /// True once the user has confirmed awareness of live trading for this
+    /// session. Cleared when the app restarts — the confirmation modal must
+    /// fire again every run.
+    pub live_acknowledged: bool,
 }
 
 const MAX_ALERTS: usize = 100;
@@ -373,6 +377,7 @@ impl Default for SharedState {
             trade_journal: VecDeque::new(),
             daily_state: DayStateView::Normal,
             gate_rejections: VecDeque::new(),
+            live_acknowledged: false,
         }
     }
 }

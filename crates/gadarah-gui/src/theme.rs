@@ -34,6 +34,17 @@ pub const LIGHT_TEXT: Color32 = Color32::from_rgb(20, 28, 40);
 pub const LIGHT_MUTED: Color32 = Color32::from_rgb(92, 104, 120);
 pub const LIGHT_INPUT_BG: Color32 = Color32::from_rgb(238, 242, 247);
 
+// ── Forge palette (dark-fantasy overlay used by the ornaments layer) ──────────
+// These are NOT the main app chrome; they are consumed by widgets/ornaments and
+// the demo-banner / mascot layer for the parchment-and-gold aesthetic.
+pub const FORGE_BG: Color32 = Color32::from_rgb(18, 8, 6);
+pub const FORGE_GOLD: Color32 = Color32::from_rgb(212, 168, 71);
+pub const FORGE_GOLD_DIM: Color32 = Color32::from_rgb(139, 111, 46);
+pub const FORGE_CRIMSON: Color32 = Color32::from_rgb(139, 26, 26);
+pub const FORGE_CHROME: Color32 = Color32::from_rgb(138, 139, 147);
+pub const FORGE_OBSIDIAN: Color32 = Color32::from_rgb(30, 31, 46);
+pub const FORGE_PARCHMENT: Color32 = Color32::from_rgb(54, 38, 22);
+
 // ── Palette structure ─────────────────────────────────────────────────────────
 struct Palette {
     bg: Color32,
@@ -267,6 +278,15 @@ pub fn section_label(ui: &mut egui::Ui, text: &str) {
 /// Large accent heading
 pub fn heading(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(18.0).color(TEXT).strong());
+}
+
+/// Breathing-glow modulation for ornaments. Returns `base` multiplied by a
+/// gentle 0.70..1.00 envelope driven by `time_secs * freq_hz`. Callers pass the
+/// app clock (seconds since start) so every ornament on screen pulses in sync.
+pub fn breathing_glow(time_secs: f32, base: Color32, freq_hz: f32) -> Color32 {
+    let phase = (time_secs * freq_hz * std::f32::consts::TAU).sin();
+    let factor = 0.85 + 0.15 * phase;
+    base.linear_multiply(factor.clamp(0.70, 1.00))
 }
 
 /// Green if non-negative, red otherwise

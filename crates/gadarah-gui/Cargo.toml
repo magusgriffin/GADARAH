@@ -39,8 +39,23 @@ thiserror = { workspace = true }
 # Database
 rusqlite = { workspace = true }
 
+# Oracle backend (local Ollama + remote OpenAI-compatible endpoints)
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+dirs = "5"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.31", default-features = false, features = ["x11", "wayland"] }
 
 [features]
 default = []
+
+# ── Windows installer metadata (consumed by cargo-wix) ────────────────────────
+# The wix/ directory at the workspace root holds the .wxs source; cargo-wix
+# finds it via the [package.metadata.wix] table below.
+[package.metadata.wix]
+name = "GADARAH"
+upgrade-guid = "0f0a9e6c-6b3d-4d7a-9a0a-7ad8c9aef011"
+path-guid = "1b4f6b12-df7d-4e66-9db9-54a9a5e55ad2"
+license = false
+eula = false
+include = ["../../wix/main.wxs"]

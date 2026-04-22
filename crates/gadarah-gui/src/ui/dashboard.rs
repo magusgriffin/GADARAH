@@ -7,8 +7,9 @@ use eframe::egui;
 use egui::RichText;
 use gadarah_core::{Direction, HeadId, Regime9, RegimeSignal9};
 
-use crate::state::{AppState, LogLevel, Position};
+use crate::state::{AppState, ConnectionStatus, LogLevel, Position};
 use crate::theme;
+use crate::widgets::acv::{self, AcvParams};
 
 pub struct DashboardPanel;
 
@@ -30,8 +31,20 @@ impl DashboardPanel {
             selected_firm,
             daily_dd_limit,
             total_dd_limit,
+            starting_balance,
+            stale_ms,
+            connection_status,
+            profit_target_usd,
         ) = {
             let g = app_state.lock().unwrap();
+            let profit_target_usd = g.firm_config.as_ref().and_then(|fc| {
+                let pct = fc.firm.profit_target_pct;
+                if pct > Decimal::ZERO {
+                    Some(g.starting_balance * pct / dec!(100))
+                } else {
+                    None
+                }
+            });
             let daily_dd_limit: f32 = g
                 .config
                 .kill_switch
@@ -62,6 +75,10 @@ impl DashboardPanel {
                 g.selected_firm.clone(),
                 daily_dd_limit,
                 total_dd_limit,
+                g.starting_balance,
+                g.stale_ms,
+                g.connection_status,
+                profit_target_usd,
             )
         };
 
@@ -115,6 +132,22 @@ impl DashboardPanel {
             });
             ui.add_space(12.0);
         }
+
+        // ── ACV hero widget ──────────────────────────────────────────────────
+        let _ = starting_balance; // reserved for phase-aware cashout math
+        let time_secs = ui.ctx().input(|i| i.time) as f32;
+        acv::show(
+            ui,
+            &AcvParams {
+                value_usd: total_pnl,
+                target_usd: profit_target_usd,
+                is_live: matches!(connection_status, ConnectionStatus::ConnectedLive),
+                stale_ms,
+                time_secs,
+                currency: "USD",
+            },
+        );
+        ui.add_space(12.0);
 
         // ── Firm header ─────────────────────────────────────────────────────
         if let Some(firm) = &selected_firm {

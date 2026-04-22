@@ -1,0 +1,118 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  GADARAH Windows installer — WiX v4 source.
+
+  Build:
+    cargo install cargo-wix
+    cargo wix -p gadarah-gui --nocapture
+
+  The MSI is intentionally unsigned for the v1 build. Users will see a
+  Windows SmartScreen warning on first run; documentation at
+  wix/INSTALLER_README.md covers the "More info → Run anyway" workaround.
+
+  Upgrade code is stable — do NOT regenerate on every release; bumping it
+  breaks the in-place upgrade path.
+-->
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package
+        Name="GADARAH"
+        Manufacturer="GADARAH"
+        Version="0.1.0"
+        UpgradeCode="0f0a9e6c-6b3d-4d7a-9a0a-7ad8c9aef011"
+        Scope="perUser"
+        Compressed="yes"
+        InstallerVersion="450">
+
+        <MajorUpgrade
+            Schedule="afterInstallInitialize"
+            DowngradeErrorMessage="A newer version of GADARAH is already installed." />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <!-- Feature tree: GUI is required; CLI daemon is optional; Ollama
+             bootstrap is optional and off by default. -->
+        <Feature Id="Main" Title="GADARAH" Level="1" AllowAdvertise="no">
+            <ComponentGroupRef Id="GuiComponents" />
+            <Feature Id="CliDaemon" Title="CLI Daemon" Level="1" AllowAdvertise="no">
+                <ComponentGroupRef Id="CliComponents" />
+            </Feature>
+            <Feature Id="OllamaBootstrap" Title="Install Ollama + DeepSeek R1 1.5B" Level="1000" AllowAdvertise="no">
+                <ComponentGroupRef Id="OllamaComponents" />
+            </Feature>
+        </Feature>
+
+        <StandardDirectory Id="LocalAppDataFolder">
+            <Directory Id="APPLICATIONFOLDER" Name="GADARAH">
+                <Directory Id="BinDir" Name="bin" />
+                <Directory Id="ConfigDir" Name="config" />
+                <Directory Id="ScriptsDir" Name="scripts" />
+            </Directory>
+        </StandardDirectory>
+
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="ShortcutFolder" Name="GADARAH" />
+        </StandardDirectory>
+
+        <ComponentGroup Id="GuiComponents" Directory="BinDir">
+            <Component Id="GuiBinary" Guid="*">
+                <File Id="GadarahGuiExe"
+                      Source="target\release\gadarah-gui.exe"
+                      KeyPath="yes" />
+            </Component>
+            <Component Id="StartMenuShortcut" Guid="*" Directory="ShortcutFolder">
+                <Shortcut Id="StartMenuShortcutId"
+                          Name="GADARAH"
+                          Target="[#GadarahGuiExe]"
+                          WorkingDirectory="APPLICATIONFOLDER" />
+                <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
+                <RegistryValue Root="HKCU"
+                               Key="Software\GADARAH\Installed"
+                               Name="gui"
+                               Type="integer"
+                               Value="1"
+                               KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+        <ComponentGroup Id="CliComponents" Directory="BinDir">
+            <Component Id="CliBinary" Guid="*">
+                <File Id="GadarahCliExe"
+                      Source="target\release\gadarah-cli.exe"
+                      KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+        <!-- Placeholder: the post-install action shells out to the script
+             below, which downloads and installs Ollama + pulls DeepSeek R1.
+             Only runs when the user opts into the OllamaBootstrap feature. -->
+        <ComponentGroup Id="OllamaComponents" Directory="ScriptsDir">
+            <Component Id="OllamaScript" Guid="*">
+                <File Id="InstallOllamaPs1"
+                      Source="wix\install_ollama.ps1"
+                      KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+        <!-- UI: minimal Feature-Tree dialog set. No license screen (MIT OR
+             Apache-2.0 is documented in the installed tree). -->
+        <ui:WixUI Id="WixUI_FeatureTree" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui" />
+
+        <!-- Optional custom action: run the Ollama bootstrap script if its
+             feature was selected. Deferred + elevated so script output is
+             available in install logs. -->
+        <SetProperty Id="OllamaInstallCmd"
+                     Value='powershell.exe -NoProfile -ExecutionPolicy Bypass -File "[#InstallOllamaPs1]"'
+                     Before="InstallOllama"
+                     Sequence="execute" />
+        <CustomAction Id="InstallOllama"
+                      BinaryRef="WixCA"
+                      DllEntry="CAQuietExec"
+                      Execute="deferred"
+                      Return="ignore"
+                      Impersonate="yes" />
+        <InstallExecuteSequence>
+            <Custom Action="InstallOllama" After="InstallFiles" Condition="&amp;OllamaBootstrap=3" />
+        </InstallExecuteSequence>
+    </Package>
+</Wix>

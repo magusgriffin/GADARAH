@@ -9,6 +9,7 @@ members = [
     "crates/gadarah-cli",
     "crates/gadarah-feed",
     "crates/gadarah-gui",
+    "crates/gadarah-wizard",
 ]
 
 [workspace.dependencies]

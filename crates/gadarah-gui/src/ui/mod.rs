@@ -4,17 +4,21 @@ pub mod backtest;
 pub mod config_tab;
 pub mod dashboard;
 pub mod logs;
+pub mod oracle;
 pub mod payout;
 pub mod performance;
 pub mod price_chart;
+pub mod sessions;
 
 pub use backtest::BacktestPanel;
 pub use config_tab::ConfigPanel;
 pub use dashboard::DashboardPanel;
 pub use logs::LogsPanel;
+pub use oracle::OraclePanel;
 pub use payout::PayoutPanel;
 pub use performance::PerformancePanel;
 pub use price_chart::PriceChartPanel;
+pub use sessions::SessionsPanel;
 
 use gadarah_backtest::ChallengeRules;
 
