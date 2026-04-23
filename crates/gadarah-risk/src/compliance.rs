@@ -149,6 +149,10 @@ pub struct PropFirmComplianceManager {
     config: ComplianceConfig,
     blackout_windows: Vec<ComplianceBlackoutWindow>,
     recent_entries: VecDeque<RecordedEntry>,
+    /// Per-firm override for whether news-head trading is permitted. Populated
+    /// from `FirmConfig::news_trading_allowed` at construction. Scalp heads are
+    /// still gated separately.
+    news_trading_allowed: bool,
 }
 
 /// Backwards-compatible alias — existing code referencing FundingPipsComplianceManager
@@ -162,13 +166,17 @@ impl PropFirmComplianceManager {
             config: ComplianceConfig::default(),
             blackout_windows: Vec::new(),
             recent_entries: VecDeque::new(),
+            news_trading_allowed: true,
         }
     }
 
     pub fn for_firm(firm: &FirmConfig) -> Self {
         let program = detect_program(firm);
         if program == FirmProgram::Disabled {
-            return Self::disabled();
+            return Self {
+                news_trading_allowed: firm.news_trading_allowed,
+                ..Self::disabled()
+            };
         }
 
         let config = config_for_program(program);
@@ -178,6 +186,7 @@ impl PropFirmComplianceManager {
             config,
             blackout_windows: Vec::new(),
             recent_entries: VecDeque::new(),
+            news_trading_allowed: firm.news_trading_allowed,
         }
     }
 
@@ -213,28 +222,24 @@ impl PropFirmComplianceManager {
         self.prune(timestamp);
 
         // ── Gate 1: Head blocking ───────────────────────────────────────
-        // FundingPips: block news/scalp heads (their TOS explicitly forbids
-        //   tick-scalping and news-straddling strategies).
-        // FTMO: block news/scalp heads during challenge (FTMO allows news
-        //   trading technically but flags gambling-style behavior around
-        //   high-impact news — we enforce conservatively to guarantee payout).
-        // The5ers: news trading is allowed but we still block pure scalp heads
-        //   to avoid pattern-detection issues.
-        if self.program.is_fundingpips() || self.program.is_ftmo() {
-            if matches!(
-                signal.head,
-                HeadId::News | HeadId::ScalpM1 | HeadId::ScalpM5
-            ) {
+        // Tick-scalping heads are blocked across the board — every supported
+        // firm flags rapid-fire entries as "gambling style" and denies payout.
+        if matches!(signal.head, HeadId::ScalpM1 | HeadId::ScalpM5) {
+            return Err(self.reject(format!(
+                "{}: tick-scalping heads blocked to avoid pattern flags",
+                self.program.label()
+            )));
+        }
+        // News-head permission is per-firm and read from FirmConfig rather than
+        // hardcoded: The5ers, FTMO, and the stricter firms all make their own
+        // call. FundingPips remains blanket-blocked because their TOS forbids
+        // news straddling outright regardless of the toml flag.
+        if matches!(signal.head, HeadId::News) {
+            if self.program.is_fundingpips() || !self.news_trading_allowed {
                 return Err(self.reject(format!(
-                    "{} forbids news trading / tick-scalping style execution",
+                    "{}: news-head trading disabled for this firm profile",
                     self.program.label()
                 )));
-            }
-        } else if self.program.is_the5ers() {
-            if matches!(signal.head, HeadId::ScalpM1 | HeadId::ScalpM5) {
-                return Err(
-                    self.reject("The5ers: tick-scalping heads blocked to avoid pattern flags")
-                );
             }
         }
 
@@ -728,11 +733,11 @@ mod tests {
     }
 
     #[test]
-    fn ftmo_blocks_news_and_scalp_heads() {
+    fn ftmo_blocks_scalp_heads_always() {
         let firm = ftmo_1step_firm();
         let mut manager = PropFirmComplianceManager::for_firm(&firm);
 
-        for head in [HeadId::News, HeadId::ScalpM1, HeadId::ScalpM5] {
+        for head in [HeadId::ScalpM1, HeadId::ScalpM5] {
             let result = manager.evaluate_entry(
                 &signal(Direction::Buy, head, 1_000),
                 dec!(1.0),
@@ -740,8 +745,39 @@ mod tests {
                 &[],
                 1_000,
             );
-            assert!(result.is_err(), "FTMO should block {:?}", head);
+            assert!(result.is_err(), "FTMO should block scalp head {:?}", head);
         }
+    }
+
+    #[test]
+    fn ftmo_news_head_follows_firm_flag() {
+        // news_trading_allowed = true → news head is permitted.
+        let firm_on = ftmo_1step_firm();
+        assert!(firm_on.news_trading_allowed);
+        let mut manager_on = PropFirmComplianceManager::for_firm(&firm_on);
+        assert!(manager_on
+            .evaluate_entry(
+                &signal(Direction::Buy, HeadId::News, 1_000),
+                dec!(1.0),
+                dec!(1.0),
+                &[],
+                1_000,
+            )
+            .is_ok());
+
+        // news_trading_allowed = false → news head is blocked.
+        let mut firm_off = ftmo_1step_firm();
+        firm_off.news_trading_allowed = false;
+        let mut manager_off = PropFirmComplianceManager::for_firm(&firm_off);
+        assert!(manager_off
+            .evaluate_entry(
+                &signal(Direction::Buy, HeadId::News, 1_000),
+                dec!(1.0),
+                dec!(1.0),
+                &[],
+                1_000,
+            )
+            .is_err());
     }
 
     #[test]

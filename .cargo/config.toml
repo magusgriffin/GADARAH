@@ -1,0 +1,22 @@
+# Cross-compile settings used when building the Windows installer payload
+# from Linux or macOS. Two linkers are supported:
+#
+# 1. mingw-w64 — install `mingw-w64-gcc` (Arch AUR) or the equivalent package
+#    on your distro. Provides `x86_64-w64-mingw32-gcc` as the linker.
+#
+# 2. cargo-zigbuild — install `zig` + `cargo install cargo-zigbuild`, then run
+#    `cargo zigbuild --target x86_64-pc-windows-gnu` instead of `cargo build`.
+#    Preferred on hosts without mingw because zig ships its own libc.
+#
+# The wizard's own Windows cross-build is driven by `ci/build-windows.sh`.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+rustflags = ["-C", "link-arg=-s"]
+
+[target.x86_64-pc-windows-msvc]
+# MSVC targets require LLD or the MSVC linker; we default to lld-link, which
+# rustup ships with the Rust toolchain on Windows. No-op on a Linux host
+# without the MSVC CRT — use the -gnu target above instead.
+linker = "lld-link"

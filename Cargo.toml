@@ -24,6 +24,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 prost = "0.13"
 prost-build = "0.13"

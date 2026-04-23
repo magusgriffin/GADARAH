@@ -1,8 +1,13 @@
-# Verified U.S. + cTrader + bot-friendly target as of 2026-04-16.
+# Verified U.S. + cTrader + bot-friendly target as of 2026-04-23.
+# FTMO 2-Step rule set: phase 1 requires 8% gain, phase 2 requires 5%.
+# The flat firm schema cannot express both stages, so `profit_target_pct`
+# holds the phase currently being attempted — default is phase 1 (8%).
+# After phase 1 passes, the runtime switches to phase 2 via `advance_phase`.
 [firm]
 name = "FTMO 2-Step"
 challenge_type = "ftmo_2step"
-profit_target_pct = 10.0
+profit_target_pct = 8.0
+phase2_profit_target_pct = 5.0
 daily_dd_limit_pct = 5.0
 max_dd_limit_pct = 10.0
 dd_mode = "static"

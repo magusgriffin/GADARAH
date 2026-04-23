@@ -1,12 +1,14 @@
-# Verified U.S. + cTrader + bot-friendly target as of 2026-04-16.
-# Note: FTMO 1-Step also has a 50% Best Day Rule. The challenge simulator
-# models that via consistency_cap_pct; this flat config cannot express it.
+# Verified U.S. + cTrader + bot-friendly target as of 2026-04-23.
+# FTMO 1-Step rule set: 10% profit target, 5% max overall DD (EOD trailing),
+# NO daily loss limit on the 1-Step program. The 50% Best Day Rule applies
+# at payout; the challenge simulator expresses that via consistency_cap_pct.
 [firm]
 name = "FTMO 1-Step"
 challenge_type = "ftmo_1step"
 profit_target_pct = 10.0
-daily_dd_limit_pct = 3.0
-max_dd_limit_pct = 10.0
+# 1-Step has no daily-loss rule. Kept at 0.0 so the daily gate disables itself.
+daily_dd_limit_pct = 0.0
+max_dd_limit_pct = 5.0
 dd_mode = "eod_trailing"
 min_trading_days = 0
 news_trading_allowed = true

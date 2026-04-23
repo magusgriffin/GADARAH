@@ -118,7 +118,7 @@ impl WizardApp {
                 self.reached = next;
             }
             if next == WizardTab::Install {
-                self.install_state.start();
+                self.install_state.start(&self.components);
             }
         }
     }

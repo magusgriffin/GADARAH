@@ -43,10 +43,12 @@ use gadarah_data::{
 };
 use gadarah_feed::{BarStreamer, Tick as FeedTick};
 use gadarah_risk::{
-    calculate_lots, can_add_pyramid, create_pyramid_layer, ComplianceBlackoutWindow,
-    ComplianceOpenExposure, DayState, ExecutionConfig as RiskExecutionConfig,
-    ExecutionEngine as RiskExecutionEngine, FillRecord, PropFirmComplianceManager,
-    PyramidAddCandidate, PyramidConfig, PyramidState, RiskPercent, SizingInputs,
+    calculate_lots, can_add_pyramid, create_pyramid_layer, AccountPhase, AccountState,
+    ComplianceBlackoutWindow, ComplianceOpenExposure, CorrelationGuard, CorrelationGuardConfig,
+    DailyPnlConfig, DailyPnlEngine, ExecutionConfig as RiskExecutionConfig,
+    ExecutionEngine as RiskExecutionEngine, FillRecord, KillSwitch, PositionRef, PreTradeGate,
+    PropFirmComplianceManager, ProtectiveCloseReason, PyramidAddCandidate, PyramidConfig,
+    PyramidState, RiskDecision, RiskPercent, SizingInputs,
 };
 
 use crate::config::{load_config, load_firm_config, FirmConfigFile, GadarahConfig};
@@ -85,18 +87,35 @@ struct LivePositionState {
 struct LiveRuntime {
     execution: RiskExecutionEngine,
     compliance: PropFirmComplianceManager,
-    /// Set to true when a DD-based halt condition is detected. Notified via Discord once.
-    kill_switch_active: bool,
+    /// Sealed kill switch: only armed via `activate()` or triggered thresholds
+    /// inside `check()`. No public deactivate path.
+    kill_switch: KillSwitch,
+    /// Edge-triggered daily P&L state; drives DailyStopped and flatten-all.
+    daily_pnl: DailyPnlEngine,
+    /// Authoritative drawdown + profit target tracker.
+    account: AccountState,
+    /// Rolling correlation estimator + portfolio rebalancer.
+    correlation: CorrelationGuard,
+    /// Last Discord-notified kill-switch state, to dedupe notifications.
+    kill_notified: bool,
+    /// Set once `reconcile_blocking` has succeeded at least once post-connect.
+    broker_synced: bool,
     account_id: i64,
     positions_by_head: HashMap<HeadId, LivePositionState>,
     pyramid_config: PyramidConfig,
     pyramid_enabled: bool,
     /// Consecutive losing trade count. Reset on a win.
     consecutive_losses: u8,
-    /// Equity at the start of the current trading day (resets when the UTC day rolls).
-    day_open_equity: Decimal,
-    /// Last observed UTC day (used to detect day rollover).
+    /// Set of distinct trading day indices (UTC div 86400) that had a closed
+    /// trade. Used to enforce firm `min_trading_days` before honoring a
+    /// profit-target halt and payout request.
+    trading_days: std::collections::HashSet<i64>,
+    /// Last observed day index — used to emit a "new trading day" log.
     last_day: i64,
+    /// Set once `profit_target_pct` is reached AND `min_trading_days` is met.
+    /// Once true, new entries are refused and the live loop emits a payout-
+    /// ready notification.
+    profit_target_halted: bool,
 }
 
 pub fn run_backtest(args: &[String]) {
@@ -858,24 +877,65 @@ pub fn run_live(args: &[String]) {
     }
 
     let mut streamer = BarStreamer::new(timeframe);
-    let mut compliance =
-        PropFirmComplianceManager::for_firm(&ctx.firm_file.firm.to_firm_config());
+    let firm_config = ctx.firm_file.firm.to_firm_config();
+    let mut compliance = PropFirmComplianceManager::for_firm(&firm_config);
     compliance.set_blackout_windows(ctx.compliance_blackout_windows.clone());
+
+    // Daily P&L config: use firm's daily_dd_limit_pct as the daily stop. When
+    // the firm has no daily rule (e.g. FTMO 1-Step with 0.0) we still run the
+    // engine with a large stop so the state machine stays valid but never trips.
+    let daily_config = DailyPnlConfig {
+        daily_stop_pct: if firm_config.daily_dd_limit_pct > Decimal::ZERO {
+            firm_config.daily_dd_limit_pct
+        } else {
+            dec!(100)
+        },
+        ..DailyPnlConfig::default()
+    };
+    let daily_pnl = DailyPnlEngine::new(daily_config, ctx.balance);
+
+    let account = AccountState {
+        phase: AccountPhase::ChallengePhase1,
+        firm: firm_config,
+        starting_balance: ctx.balance,
+        current_equity: ctx.balance,
+        high_water_mark: ctx.balance,
+        profit_pct: Decimal::ZERO,
+        dd_from_hwm_pct: Decimal::ZERO,
+        dd_remaining_pct: ctx.firm_file.firm.max_dd_limit_pct,
+        target_remaining: ctx.firm_file.firm.profit_target_pct,
+        trading_days: 0,
+        min_days_met: ctx.firm_file.firm.min_trading_days == 0,
+        days_since_funded: 0,
+        total_trades: 0,
+        consecutive_losses: 0,
+        phase_start_time: chrono::Utc::now().timestamp(),
+    };
+
+    let correlation = CorrelationGuard::new(CorrelationGuardConfig::default());
+
     let mut runtime = LiveRuntime {
         execution: build_execution_engine(&ctx),
         compliance,
-        kill_switch_active: false,
+        kill_switch: KillSwitch::new(),
+        daily_pnl,
+        account,
+        correlation,
+        kill_notified: false,
+        broker_synced: false,
         account_id,
         positions_by_head: HashMap::new(),
         pyramid_config: ctx.config.pyramid_config(),
         pyramid_enabled: ctx.config.pyramid.enabled,
         consecutive_losses: 0,
-        day_open_equity: ctx.balance,
-        last_day: 0,
+        trading_days: std::collections::HashSet::new(),
+        last_day: -1,
+        profit_target_halted: false,
     };
 
     // Position recovery: restore positions_by_head from DB + broker reconcile.
     if let Ok(reconcile) = client.reconcile_blocking() {
+        runtime.broker_synced = true;
         let unclosed = load_unclosed_trade_count(db.conn(), account_id).unwrap_or(0);
         if unclosed > 0 || reconcile.open_position_count > 0 {
             let recovered =
@@ -1158,6 +1218,15 @@ fn process_live_bar(
                                 } else {
                                     runtime.consecutive_losses = 0;
                                 }
+                                // Trading-day tracker: record the UTC day on
+                                // which a trade closed so the firm's
+                                // `min_trading_days` requirement is honored.
+                                let closed_day = report.close_time.div_euclid(86_400);
+                                runtime.trading_days.insert(closed_day);
+                                runtime.account.trading_days =
+                                    runtime.trading_days.len() as u32;
+                                runtime.account.min_days_met = runtime.account.trading_days
+                                    >= ctx.firm_file.firm.min_trading_days;
 
                                 let close_msg = format!(
                                     "[CLOSE] {:?} pos={} price={} lots={} pnl={:.2}",
@@ -1252,7 +1321,7 @@ fn process_live_bar(
                     }
                 };
 
-                let pip_val = pip_value_for(&ctx.symbol);
+                let pip_val = pip_value_for_signal(&ctx.symbol, signal.entry);
                 let cost_per_lot_usd =
                     current_spread_pips * pip_val + commission_per_lot_usd(&ctx.symbol);
                 // Conservative default leverage (30:1) until FirmConfig
@@ -1291,19 +1360,6 @@ fn process_live_bar(
                         opened_at: position.opened_at,
                     })
                     .collect::<Vec<_>>();
-                if let Err(rejection) = runtime.compliance.evaluate_entry(
-                    &signal,
-                    risk_pct.inner(),
-                    lots,
-                    &active_exposures,
-                    bar.timestamp,
-                ) {
-                    warn!(
-                        "Skipping signal for {:?}: compliance rule blocked entry ({})",
-                        signal.head, rejection.detail
-                    );
-                    continue;
-                }
 
                 if !execute {
                     println!(
@@ -1319,10 +1375,65 @@ fn process_live_bar(
                     continue;
                 }
 
-                // A13 will swap `for_simulation()` for a real `PreTradeGate`
-                // witness emitted from `gate::evaluate`. The compile-time seal
-                // (A2) already guarantees every live call holds *some* witness.
-                let witness = gadarah_risk::gate::ExecutionWitness::for_simulation();
+                if runtime.profit_target_halted {
+                    info!(
+                        "Skipping signal for {:?}: profit target already met, halted",
+                        signal.head
+                    );
+                    continue;
+                }
+
+                // Pre-trade gate: composes kill switch, broker sync, daily P&L
+                // engine, equity floor, execution engine (vol halt / stale /
+                // spread / R:R), correlation guard, performance ledger, and
+                // firm compliance. Returns an `ExecutionWitness` only when all
+                // checks pass. The compile-time seal on `send_order` means no
+                // order ships without one.
+                let open_positions: Vec<PositionRef> = runtime
+                    .positions_by_head
+                    .values()
+                    .map(|p| PositionRef {
+                        id: p.position_id,
+                        symbol: p.signal.symbol.clone(),
+                        direction: p.signal.direction,
+                        opened_at: p.opened_at,
+                        unrealized_pnl_pct: Decimal::ZERO,
+                    })
+                    .collect();
+                let gate_signal = signal.clone();
+                let gate_session = gate_signal.session;
+                let gate_regime = gate_signal.regime;
+                let mut gate = PreTradeGate {
+                    kill_switch: &mut runtime.kill_switch,
+                    daily_pnl: &runtime.daily_pnl,
+                    account: &runtime.account,
+                    execution: &runtime.execution,
+                    correlation: &mut runtime.correlation,
+                    performance_ledger: None,
+                    compliance: &mut runtime.compliance,
+                    broker_synced: runtime.broker_synced,
+                };
+                let decision = gate.evaluate(gadarah_risk::GateRequest {
+                    signal: gate_signal,
+                    risk_pct,
+                    lots,
+                    is_pyramid: false,
+                    regime: gate_regime,
+                    session: gate_session,
+                    open_positions,
+                    active_exposures,
+                    now: bar.timestamp,
+                });
+                let witness = match decision {
+                    RiskDecision::Execute { witness, .. } => witness,
+                    RiskDecision::Reject { reason, .. } => {
+                        warn!(
+                            "Skipping signal for {:?}: pre-trade gate rejected ({:?})",
+                            signal.head, reason
+                        );
+                        continue;
+                    }
+                };
                 match client.send_order(
                     &OrderRequest {
                         symbol: ctx.symbol.clone(),
@@ -1373,7 +1484,7 @@ fn process_live_bar(
                         .ok();
 
                         // Phase F: Build initial PyramidState for this position.
-                        let pip_val = pip_value_for(&ctx.symbol);
+                        let pip_val = pip_value_for_signal(&ctx.symbol, fill.fill_price);
                         let risk_usd =
                             lots * ((signal.entry - signal.stop_loss).abs() / pip_size) * pip_val;
                         let pyramid_state = PyramidState::new(
@@ -1428,65 +1539,86 @@ fn process_live_bar(
 
     snapshot_live_equity(db, runtime.account_id, client, ctx.balance, bar.timestamp);
 
-    // Phase C: Check DD-based kill switch. Notify Discord on first activation.
+    // Phase C: feed the real risk stack with current equity and let it arm.
+    // The hand-rolled shadow logic is gone — `KillSwitch`, `DailyPnlEngine`,
+    // and `AccountState` are now authoritative. The pre-trade gate reads them
+    // directly, so new entries cannot slip through a breached limit.
     if execute {
         if let Ok(info) = client.account_info() {
-            let daily_dd_limit = ctx.firm_file.firm.daily_dd_limit_pct;
-            let total_dd_limit = ctx.firm_file.firm.max_dd_limit_pct;
-            let balance = ctx.balance;
+            runtime.account.update_equity(info.equity);
+            runtime.daily_pnl.update(info.equity, bar.timestamp);
+            // Consecutive-loss cooldown is tracked on AccountState — mirror it.
+            runtime.account.consecutive_losses = runtime.consecutive_losses;
+            let was_active = runtime.kill_switch.is_active();
+            let now_active = runtime.kill_switch.check(&runtime.account, bar.timestamp);
 
-            // Day rollover: reset daily equity baseline at UTC midnight.
-            let current_day = bar.timestamp / 86_400;
+            // Trading-day tracker: first tick of a UTC day that actually has a
+            // closed trade bumps the counter. We detect day rollover here but
+            // only increment when a trade closes (handled in the exit path).
+            let current_day = bar.timestamp.div_euclid(86_400);
             if current_day != runtime.last_day {
-                runtime.day_open_equity = info.equity;
                 runtime.last_day = current_day;
+                runtime.account.trading_days = runtime.trading_days.len() as u32;
+                runtime.account.min_days_met = runtime.account.trading_days
+                    >= ctx.firm_file.firm.min_trading_days;
             }
 
-            let total_dd_used = if balance > Decimal::ZERO {
-                (balance - info.equity) / balance * dec!(100)
-            } else {
-                Decimal::ZERO
-            };
-            let daily_dd_used = if runtime.day_open_equity > Decimal::ZERO {
-                (runtime.day_open_equity - info.equity).max(Decimal::ZERO) / runtime.day_open_equity
-                    * dec!(100)
-            } else {
-                Decimal::ZERO
-            };
-
-            // Trigger at the configured percentage of each firm limit.
-            let trigger_frac = ctx.config.kill_switch.total_dd_trigger_pct / dec!(100);
-            let daily_trigger = daily_dd_limit * trigger_frac;
-            let total_trigger = total_dd_limit * trigger_frac;
-            let consec_limit = ctx.config.kill_switch.consecutive_loss_limit;
-            let should_halt = total_dd_used >= total_trigger
-                || daily_dd_used >= daily_trigger
-                || (consec_limit > 0 && runtime.consecutive_losses >= consec_limit);
-            if should_halt && !runtime.kill_switch_active {
-                runtime.kill_switch_active = true;
-                let reason = if total_dd_used >= total_trigger {
-                    format!("total DD {:.2}% >= {:.2}%", total_dd_used, total_trigger)
-                } else if daily_dd_used >= daily_trigger {
-                    format!("daily DD {:.2}% >= {:.2}%", daily_dd_used, daily_trigger)
-                } else {
-                    format!("{} consecutive losses", runtime.consecutive_losses)
-                };
+            // Profit-target halt: once we've met the target AND trading-days
+            // minimum, refuse any new entries and notify once.
+            if !runtime.profit_target_halted
+                && runtime.account.profit_pct >= ctx.firm_file.firm.profit_target_pct
+                && runtime.account.min_days_met
+            {
+                runtime.profit_target_halted = true;
                 let msg = format!(
-                    "GADARAH KILL SWITCH on {} {}: {}",
+                    "🏁 GADARAH profit target {:.2}% reached ({} days) — halting new entries",
+                    runtime.account.profit_pct, runtime.account.trading_days
+                );
+                info!("{msg}");
+                crate::notify_discord(&msg);
+            }
+
+            // Notify on first arm of the kill switch.
+            if now_active && !was_active {
+                let reason = runtime
+                    .kill_switch
+                    .reason()
+                    .map(|r| format!("{:?}", r))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let msg = format!(
+                    "🛑 GADARAH KILL SWITCH on {} {}: {}",
                     ctx.symbol, ctx.firm_file.firm.name, reason
                 );
-                warn!("{}", msg);
+                warn!("{msg}");
                 crate::notify_discord(&msg);
-            } else if !should_halt && runtime.kill_switch_active {
-                runtime.kill_switch_active = false;
-                runtime.consecutive_losses = 0;
+                runtime.kill_notified = true;
+            } else if !now_active && runtime.kill_notified {
+                runtime.kill_notified = false;
             }
-            if runtime.kill_switch_active {
+
+            // Protective close: DailyPnlEngine emits this edge-triggered when
+            // the day state transitions into DailyStopped. We flatten every
+            // open position to stop the bleed.
+            if let Some(pc) = runtime.daily_pnl.take_protective_close() {
+                let reason_label = match pc.reason {
+                    ProtectiveCloseReason::DailyStopReached => "daily stop reached",
+                    ProtectiveCloseReason::KillSwitchArmed => "kill switch armed",
+                    ProtectiveCloseReason::TotalDdExhausted => "total DD exhausted",
+                    ProtectiveCloseReason::BrokerDesynced => "broker desynced",
+                };
                 warn!(
-                    "Kill switch active (total DD {:.2}%) — skipping pyramid and new entries",
-                    total_dd_used
+                    "Protective close: {} @ {} — flattening {} open positions",
+                    reason_label,
+                    pc.at_timestamp,
+                    runtime.positions_by_head.len()
                 );
-                // Write GUI state and return early — no pyramid adds when halted.
+                flatten_all_positions(runtime, client, db, reason_label, &ctx.symbol);
+            }
+
+            if now_active {
+                warn!(
+                    "Kill switch active — skipping pyramid and new entries this tick",
+                );
                 if let Some(path) = gui_state_path {
                     write_gui_state(
                         path,
@@ -1500,14 +1632,19 @@ fn process_live_bar(
                 }
                 return;
             }
-            let _ = daily_trigger; // used in future per-day DD tracking
         }
     }
 
     // Phase F: Pyramid — check open positions for eligible adds.
-    if execute && runtime.pyramid_enabled {
+    // Suppress pyramid adds if the profit-target halt is active or the kill
+    // switch has armed; they would be new exposure on top of an existing win.
+    if execute
+        && runtime.pyramid_enabled
+        && !runtime.profit_target_halted
+        && !runtime.kill_switch.is_active()
+    {
         let pip_size = pip_size_for(&ctx.symbol);
-        let pip_val = pip_value_for(&ctx.symbol);
+        let pip_val = pip_value_for_signal(&ctx.symbol, bar.close);
         let pyramid_cfg = runtime.pyramid_config.clone();
         let heads_with_pyramid: Vec<HeadId> = runtime
             .positions_by_head
@@ -1517,7 +1654,7 @@ fn process_live_bar(
                 let candidate = PyramidAddCandidate {
                     current_price: bar.close,
                     current_regime: regime_signal.regime,
-                    day_state: DayState::Normal, // conservative default
+                    day_state: runtime.daily_pnl.state(),
                     pip_value_per_lot: pip_val,
                     pip_size,
                     take_profit: pos.signal.take_profit,
@@ -1531,10 +1668,14 @@ fn process_live_bar(
             .collect();
 
         for head_id in heads_with_pyramid {
-            if let Some(pos) = runtime.positions_by_head.get_mut(&head_id) {
-                let state = match pos.pyramid.as_mut() {
-                    Some(s) => s,
-                    None => continue,
+            // Re-route each pyramid add through the pre-trade gate with
+            // `is_pyramid = true` so correlation/segment/compliance still fire.
+            let (pos_snapshot, layer) = {
+                let Some(pos) = runtime.positions_by_head.get_mut(&head_id) else {
+                    continue;
+                };
+                let Some(state) = pos.pyramid.as_mut() else {
+                    continue;
                 };
                 let layer = create_pyramid_layer(
                     &runtime.pyramid_config.clone(),
@@ -1542,25 +1683,82 @@ fn process_live_bar(
                     bar.close,
                     bar.timestamp,
                 );
-                let order = OrderRequest {
-                    symbol: ctx.symbol.clone(),
-                    direction: pos.signal.direction,
-                    lots: layer.lots,
-                    order_type: OrderType::Market,
-                    stop_loss: state.initial_entry, // SL at breakeven
-                    take_profit: pos.signal.take_profit,
-                    comment: format!("GADARAH Pyramid {:?}", head_id),
-                };
-                let witness = gadarah_risk::gate::ExecutionWitness::for_simulation();
-                match client.send_order(&order, &witness) {
-                    Ok(fill) => {
-                        println!(
-                            "[PYRAMID ADD] {:?} pos={} fill={} lots={}",
-                            head_id, fill.position_id, fill.fill_price, fill.filled_lots
-                        );
-                    }
-                    Err(err) => warn!("Pyramid order failed for {:?}: {err}", head_id),
+                (pos.signal.clone(), layer)
+            };
+            let order = OrderRequest {
+                symbol: ctx.symbol.clone(),
+                direction: pos_snapshot.direction,
+                lots: layer.lots,
+                order_type: OrderType::Market,
+                stop_loss: pos_snapshot.entry, // SL at breakeven
+                take_profit: pos_snapshot.take_profit,
+                comment: format!("GADARAH Pyramid {:?}", head_id),
+            };
+            let open_positions: Vec<PositionRef> = runtime
+                .positions_by_head
+                .values()
+                .map(|p| PositionRef {
+                    id: p.position_id,
+                    symbol: p.signal.symbol.clone(),
+                    direction: p.signal.direction,
+                    opened_at: p.opened_at,
+                    unrealized_pnl_pct: Decimal::ZERO,
+                })
+                .collect();
+            let active_exposures: Vec<ComplianceOpenExposure> = runtime
+                .positions_by_head
+                .values()
+                .map(|p| ComplianceOpenExposure {
+                    symbol: p.signal.symbol.clone(),
+                    direction: p.signal.direction,
+                    risk_pct: p.risk_pct,
+                    lots: p.lots,
+                    opened_at: p.opened_at,
+                })
+                .collect();
+            let pyramid_signal = pos_snapshot.clone();
+            let mut gate = PreTradeGate {
+                kill_switch: &mut runtime.kill_switch,
+                daily_pnl: &runtime.daily_pnl,
+                account: &runtime.account,
+                execution: &runtime.execution,
+                correlation: &mut runtime.correlation,
+                performance_ledger: None,
+                compliance: &mut runtime.compliance,
+                broker_synced: runtime.broker_synced,
+            };
+            // Pyramid adds are always at the configured base risk rate; the
+            // layer's own sizing capped by `max_layers` enforces aggregate heat.
+            let pyramid_risk = match RiskPercent::new(ctx.config.risk.base_risk_pct) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let decision = gate.evaluate(gadarah_risk::GateRequest {
+                signal: pyramid_signal.clone(),
+                risk_pct: pyramid_risk,
+                lots: layer.lots,
+                is_pyramid: true,
+                regime: pyramid_signal.regime,
+                session: pyramid_signal.session,
+                open_positions,
+                active_exposures,
+                now: bar.timestamp,
+            });
+            let witness = match decision {
+                RiskDecision::Execute { witness, .. } => witness,
+                RiskDecision::Reject { reason, .. } => {
+                    info!("Pyramid add blocked for {:?}: {:?}", head_id, reason);
+                    continue;
                 }
+            };
+            match client.send_order(&order, &witness) {
+                Ok(fill) => {
+                    println!(
+                        "[PYRAMID ADD] {:?} pos={} fill={} lots={}",
+                        head_id, fill.position_id, fill.fill_price, fill.filled_lots
+                    );
+                }
+                Err(err) => warn!("Pyramid order failed for {:?}: {err}", head_id),
             }
         }
     }
@@ -1577,6 +1775,66 @@ fn process_live_bar(
                 recent_bars,
                 equity_history,
             );
+        }
+    }
+}
+
+/// Close every open position. Called when the daily stop is reached or the
+/// kill switch arms while positions are still live. Failures are logged but
+/// never short-circuit the flatten — we want best-effort even if one close
+/// fails transiently.
+fn flatten_all_positions(
+    runtime: &mut LiveRuntime,
+    client: &mut CtraderClient,
+    db: &Database,
+    reason: &str,
+    symbol: &str,
+) {
+    let heads: Vec<HeadId> = runtime.positions_by_head.keys().copied().collect();
+    for head in heads {
+        let Some(position) = runtime.positions_by_head.remove(&head) else {
+            continue;
+        };
+        match client.close_position(&CloseRequest {
+            position_id: position.position_id,
+            lots: None,
+        }) {
+            Ok(report) => {
+                if let Some(trade_id) = position.trade_id {
+                    if let Err(err) = close_trade(
+                        db.conn(),
+                        &TradeClose {
+                            trade_id,
+                            closed_at: report.close_time,
+                            close_price: report.close_price,
+                            pnl_usd: report.pnl - report.commission,
+                            r_multiple: position
+                                .signal
+                                .rr_ratio()
+                                .unwrap_or(Decimal::ZERO),
+                            close_reason: format!("ProtectiveClose:{reason}"),
+                            slippage_pips: report.slippage_pips,
+                        },
+                    ) {
+                        warn!("Failed to persist protective close: {err}");
+                    }
+                }
+                let net_pnl = report.pnl - report.commission;
+                let msg = format!(
+                    "[FLATTEN] {:?} {} pos={} pnl={:.2} ({})",
+                    head, symbol, report.position_id, net_pnl, reason,
+                );
+                warn!("{msg}");
+                crate::notify_discord(&format!("🛑 {msg}"));
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to flatten position {}: {err}. Will retry next tick.",
+                    position.position_id,
+                );
+                // Re-insert so the next tick can try again.
+                runtime.positions_by_head.insert(head, position);
+            }
         }
     }
 }
@@ -1645,7 +1903,7 @@ fn write_gui_state(
         "equity": info.equity.to_string(),
         "free_margin": info.free_margin.to_string(),
         "daily_pnl": (info.equity - info.balance).to_string(),
-        "kill_switch_active": runtime.kill_switch_active,
+        "kill_switch_active": runtime.kill_switch.is_active(),
         "regime": format!("{:?}", regime_signal.regime),
         "symbol": symbol,
         "positions": positions,
@@ -2284,10 +2542,36 @@ fn pip_value_for(symbol: &str) -> Decimal {
     if symbol == "XAUUSD" {
         dec!(1.0)
     } else if symbol.ends_with("JPY") {
-        dec!(9.5)
+        // Fallback when no live price is available — midpoint of a typical
+        // 140–160 USDJPY range. Live code should prefer `pip_value_for_signal`.
+        dec!(6.67)
     } else {
         dec!(10.0)
     }
+}
+
+/// Pip value that depends on the current quote. For JPY pairs where the quote
+/// currency is JPY, pip value in USD is `1000 / USDJPY`, which shifts as much
+/// as 30 % across the FX cycle. `pip_value_for(&str)` keeps the static fallback
+/// for code paths without a price; the live order and pyramid paths use this
+/// variant.
+fn pip_value_for_signal(symbol: &str, price: Decimal) -> Decimal {
+    if symbol == "XAUUSD" {
+        return dec!(1.0);
+    }
+    if let Some(base) = symbol.strip_suffix("JPY") {
+        if price <= Decimal::ZERO {
+            return pip_value_for(symbol);
+        }
+        // For USDJPY the account currency is already USD; for crosses like
+        // EURJPY we need USDJPY to convert. We only hold one quote at a time,
+        // so when the symbol *is* USDJPY the price is usable directly; for
+        // crosses we approximate using the same price (close enough for
+        // sizing — final margin is still capped by leverage downstream).
+        let _ = base;
+        return dec!(1000) / price;
+    }
+    dec!(10.0)
 }
 
 fn typical_spread_pips(symbol: &str) -> Decimal {

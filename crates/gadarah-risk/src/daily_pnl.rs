@@ -1,6 +1,25 @@
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
+
+/// Return a monotonically-increasing day index that advances each time the
+/// wall clock crosses 17:00 America/New_York. Used as the reset boundary for
+/// the daily P&L engine so the daily-loss and daily-profit windows line up
+/// with prop-firm convention through both EST and EDT.
+pub fn trading_day_index(timestamp: i64) -> i64 {
+    let utc_dt: DateTime<Utc> = match Utc.timestamp_opt(timestamp, 0).single() {
+        Some(dt) => dt,
+        None => return timestamp.div_euclid(86_400),
+    };
+    let ny = utc_dt.with_timezone(&New_York);
+    // Shift the clock back by 17 hours so the day boundary sits at 17:00 NY
+    // rather than midnight — truncating after the shift then gives the day
+    // index that advances at each NY close.
+    let shifted = ny - chrono::Duration::hours(17);
+    shifted.date_naive().num_days_from_ce() as i64
+}
 
 // ---------------------------------------------------------------------------
 // ProtectiveClose
@@ -145,8 +164,12 @@ impl DailyPnlEngine {
     /// State transitions are monotonic within a day: Normal -> Cruising -> Protecting -> DailyStopped.
     /// Never regresses within the same day.
     pub fn update(&mut self, current_equity: Decimal, timestamp: i64) -> DayState {
-        // Daily reset: check if we moved to a new day
-        let day = timestamp.div_euclid(86400);
+        // Daily reset uses the prop-firm convention: 5 pm America/New_York.
+        // Every supported firm scores the daily-loss / daily-profit clock
+        // against that cutoff regardless of broker or trader locale, and it
+        // shifts with DST. `trading_day_index` returns a monotonically
+        // increasing integer that bumps at each 17:00 NY boundary.
+        let day = trading_day_index(timestamp);
         if day != self.last_day {
             // On genuine day rollovers reset to current equity.
             // On the very first call (last_day == -1 sentinel) preserve the initial

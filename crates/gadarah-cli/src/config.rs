@@ -113,6 +113,10 @@ pub struct FirmToml {
     pub name: String,
     pub challenge_type: String,
     pub profit_target_pct: Decimal,
+    /// Optional phase-2 target. Only set for 2-step programs; when `None` the
+    /// firm is single-phase and `profit_target_pct` alone is authoritative.
+    #[serde(default)]
+    pub phase2_profit_target_pct: Option<Decimal>,
     pub daily_dd_limit_pct: Decimal,
     pub max_dd_limit_pct: Decimal,
     pub dd_mode: String,
