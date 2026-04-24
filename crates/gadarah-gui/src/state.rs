@@ -316,6 +316,13 @@ pub struct SharedState {
     /// session. Cleared when the app restarts — the confirmation modal must
     /// fire again every run.
     pub live_acknowledged: bool,
+    /// True once the user has clicked "I've reviewed these limits" in the
+    /// Config tab's Auto-Stop Rules section. Session-scoped so a stale
+    /// review after a hot config edit doesn't silently pass preflight.
+    pub risk_acknowledged: bool,
+    /// True on first app launch (no `welcome_seen.flag` in config dir).
+    /// Drives the first-run welcome overlay.
+    pub show_welcome_overlay: bool,
 }
 
 const MAX_ALERTS: usize = 100;
@@ -378,6 +385,8 @@ impl Default for SharedState {
             daily_state: DayStateView::Normal,
             gate_rejections: VecDeque::new(),
             live_acknowledged: false,
+            risk_acknowledged: false,
+            show_welcome_overlay: false,
         }
     }
 }

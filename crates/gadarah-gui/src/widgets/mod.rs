@@ -5,6 +5,7 @@
 //! status) — ornaments draw what they are told and nothing else.
 
 pub mod acv;
+pub mod alert_banner;
 pub mod demo_banner;
 pub mod mascot;
 pub mod ornaments;

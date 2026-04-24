@@ -377,6 +377,42 @@ impl ConfigPanel {
                     }
                     ui.end_row();
                 });
+
+            ui.add_space(10.0);
+            let risk_ack = app_state.lock().unwrap().risk_acknowledged;
+            ui.horizontal(|ui| {
+                if risk_ack {
+                    ui.label(
+                        RichText::new("Reviewed ✓")
+                            .color(theme::GREEN)
+                            .strong()
+                            .size(13.0),
+                    );
+                    ui.label(
+                        RichText::new("Required for Demo and LIVE modes. Clears on save.")
+                            .color(theme::MUTED)
+                            .size(11.5)
+                            .italics(),
+                    );
+                } else if ui
+                    .add_sized(
+                        [220.0, 30.0],
+                        egui::Button::new(
+                            RichText::new("I've reviewed these limits")
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::FORGE_GOLD_DIM),
+                    )
+                    .clicked()
+                {
+                    let mut g = app_state.lock().unwrap();
+                    g.risk_acknowledged = true;
+                    g.add_log(
+                        LogLevel::Info,
+                        "Risk limits acknowledged — Demo/LIVE preflight cleared.",
+                    );
+                }
+            });
         });
 
         ui.add_space(12.0);
@@ -780,6 +816,9 @@ impl ConfigPanel {
         match g.config.save(&PathBuf::from("config/gadarah.toml")) {
             Ok(_) => {
                 self.pending_save = false;
+                // A fresh save changes the limits under the user's feet — force
+                // a re-acknowledgement before Demo/LIVE can run again.
+                g.risk_acknowledged = false;
                 g.add_log(LogLevel::Info, "Settings saved to config/gadarah.toml");
             }
             Err(e) => g.add_log(LogLevel::Error, format!("Save failed: {}", e)),

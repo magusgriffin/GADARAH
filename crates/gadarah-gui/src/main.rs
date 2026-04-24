@@ -9,18 +9,25 @@ use egui::RichText;
 
 use gadarah_gui::{
     config::GadarahConfig,
+    first_run,
     oracle::{OracleConfig, OracleHandle, OracleReply},
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
     ui::{
+        welcome::{WelcomeOutcome, WelcomeOverlay},
         BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, OraclePanel, PayoutPanel,
         PerformancePanel, PriceChartPanel, SessionsPanel, TradingPanel,
     },
     widgets::{
-        demo_banner,
+        alert_banner, demo_banner,
         mascot::{self, MascotMood, MascotState, MascotSubsystem},
     },
 };
+
+/// Tab index of the Config tab. Kept as a named constant so the Config
+/// nudge, preflight "Fix" links, and dashboard CTA all jump to the same
+/// place if the tab order ever shifts.
+const CONFIG_TAB_IDX: usize = 8;
 
 struct GadarahApp {
     state: AppState,
@@ -34,6 +41,10 @@ struct GadarahApp {
     oracle_cfg: OracleConfig,
     oracle: OracleHandle,
     mascot: MascotState,
+    welcome: WelcomeOverlay,
+    /// Tracks the previous `selected_tab` so we can fire mascot coaching
+    /// exactly once per tab transition.
+    prev_tab: usize,
     /// Confirmation modal for toggling into live trading.
     pending_live_confirm: bool,
 }
@@ -58,9 +69,16 @@ impl GadarahApp {
             oracle_cfg,
             oracle,
             mascot: MascotState::default(),
+            welcome: WelcomeOverlay::default(),
+            prev_tab: 0,
             pending_live_confirm: false,
         };
         app.initialize_demo_data();
+        // First launch → show welcome overlay. Persisted in
+        // `$CONFIG/gadarah/welcome_seen.flag` once the user dismisses it.
+        if first_run::is_first_run() {
+            app.state.lock().unwrap().show_welcome_overlay = true;
+        }
         app
     }
 
@@ -139,6 +157,107 @@ impl GadarahApp {
         // Oracle mood is driven by pump_oracle; Chronicler stays calm v1.
     }
 
+    /// Drain mascot-coaching events queued by the Trading panel (launch /
+    /// stop / preflight-complete transitions) and render them as speech.
+    fn pump_trading_mascot_events(&mut self) {
+        use gadarah_gui::ui::trading::MascotEvent;
+        use gadarah_gui::widgets::mascot::BubbleTone;
+        if let Some(evt) = self.trading_panel.take_mascot_event() {
+            let (head, tone, text): (MascotSubsystem, BubbleTone, &str) = match evt {
+                MascotEvent::LaunchAcknowledged(mode) => (
+                    MascotSubsystem::Chronicler,
+                    BubbleTone::Rite,
+                    match mode {
+                        gadarah_gui::ui::trading::TradingMode::DryRun => {
+                            "The dry run begins. No orders will ship."
+                        }
+                        gadarah_gui::ui::trading::TradingMode::DemoExecute => {
+                            "Demo orders now flow. Watch the daemon log."
+                        }
+                        gadarah_gui::ui::trading::TradingMode::LiveExecute => {
+                            "Live trading engaged. Every order is real."
+                        }
+                    },
+                ),
+                MascotEvent::StoppedByUser => (
+                    MascotSubsystem::Chronicler,
+                    BubbleTone::Chronicle,
+                    "Daemon stopped. Positions remain; the risk gate is quiet.",
+                ),
+                MascotEvent::PreflightComplete => (
+                    MascotSubsystem::Chronicler,
+                    BubbleTone::Rite,
+                    "Preflight passes. LIVE mode is now eligible to start.",
+                ),
+            };
+            self.mascot.bubble = Some((head, text.to_string(), tone));
+        }
+    }
+
+    /// Detect a tab transition and push a coaching speech bubble. Runs once
+    /// per frame; cheap when nothing changes.
+    fn pump_tab_navigation(&mut self) {
+        use gadarah_gui::widgets::mascot::BubbleTone;
+        if self.selected_tab == self.prev_tab {
+            return;
+        }
+        self.prev_tab = self.selected_tab;
+        let (head, tone, text) = match self.selected_tab {
+            0 => (
+                MascotSubsystem::Chronicler,
+                BubbleTone::Chronicle,
+                "Dashboard. Equity, positions, and the day's P&L.",
+            ),
+            1 => (
+                MascotSubsystem::RiskGate,
+                BubbleTone::Rite,
+                "Preflight the gates before starting a run.",
+            ),
+            2 => (
+                MascotSubsystem::MarketFeed,
+                BubbleTone::Chronicle,
+                "Session overlap. Size aligns with liquidity here.",
+            ),
+            3 => (
+                MascotSubsystem::MarketFeed,
+                BubbleTone::Chronicle,
+                "Price tape. Bars are what the heads see.",
+            ),
+            4 => (
+                MascotSubsystem::Chronicler,
+                BubbleTone::Chronicle,
+                "Performance. R-multiples and drawdown speak here.",
+            ),
+            5 => (
+                MascotSubsystem::Chronicler,
+                BubbleTone::Rite,
+                "Backtest. Validate an edge before you risk it.",
+            ),
+            6 => (
+                MascotSubsystem::ChallengeClock,
+                BubbleTone::Rite,
+                "Payout geometry. Where the challenge math lives.",
+            ),
+            7 => (
+                MascotSubsystem::Oracle,
+                BubbleTone::Divination,
+                "Oracle. It advises only — never places orders.",
+            ),
+            8 => (
+                MascotSubsystem::Chronicler,
+                BubbleTone::Rite,
+                "Config. Broker setup, risk limits, firm profile.",
+            ),
+            9 => (
+                MascotSubsystem::Chronicler,
+                BubbleTone::Chronicle,
+                "Logs. Scroll for gate rejections and compliance trips.",
+            ),
+            _ => return,
+        };
+        self.mascot.bubble = Some((head, text.to_string(), tone));
+    }
+
     fn initialize_demo_data(&mut self) {
         let mut state = self.state.lock().unwrap();
 
@@ -186,10 +305,31 @@ impl eframe::App for GadarahApp {
         // ── Background pumps ─────────────────────────────────────────────────
         self.pump_oracle();
         self.refresh_mascot_moods();
+        self.pump_trading_mascot_events();
+        self.pump_tab_navigation();
+
+        // ── First-run welcome overlay (blocks interaction until dismissed) ──
+        if self.state.lock().unwrap().show_welcome_overlay {
+            match self.welcome.show(ctx) {
+                WelcomeOutcome::None => {}
+                WelcomeOutcome::GoToConfig => {
+                    first_run::mark_seen();
+                    self.state.lock().unwrap().show_welcome_overlay = false;
+                    self.selected_tab = CONFIG_TAB_IDX;
+                }
+                WelcomeOutcome::Dismiss => {
+                    first_run::mark_seen();
+                    self.state.lock().unwrap().show_welcome_overlay = false;
+                }
+            }
+        }
 
         // ── Demo/Live banner (sits above everything else) ────────────────────
         let banner_status = self.state.lock().unwrap().connection_status;
         demo_banner::show(ctx, banner_status);
+
+        // ── Alert banner (newest un-dismissed, auto-expires at 30s) ─────────
+        alert_banner::show(ctx, &self.state);
 
         // ── Live-trading confirmation ───────────────────────────────────────
         // Fires on the first `ConnectedLive` tick of a session, AND whenever
@@ -357,17 +497,36 @@ impl eframe::App for GadarahApp {
                                 "Config",
                                 "Logs",
                             ];
+                            let (needs_setup, is_config_idx_first_run) = {
+                                let g = self.state.lock().unwrap();
+                                let needs = matches!(
+                                    g.connection_status,
+                                    ConnectionStatus::Disconnected
+                                ) || g.selected_firm.is_none();
+                                (needs, needs)
+                            };
                             for (i, label) in tabs.iter().enumerate() {
                                 let selected = self.selected_tab == i;
+                                let is_config = *label == "Config";
+                                let nudge = is_config && is_config_idx_first_run;
+                                let display: String = if nudge {
+                                    format!("▶ {label}")
+                                } else {
+                                    label.to_string()
+                                };
                                 let fg = if selected {
                                     theme::ACCENT
+                                } else if nudge {
+                                    theme::FORGE_GOLD
                                 } else {
                                     theme::MUTED
                                 };
                                 let btn = ui.add(
-                                    egui::Button::new(RichText::new(*label).size(13.5).color(fg))
-                                        .frame(false)
-                                        .min_size(egui::vec2(0.0, 44.0)),
+                                    egui::Button::new(
+                                        RichText::new(display).size(13.5).color(fg),
+                                    )
+                                    .frame(false)
+                                    .min_size(egui::vec2(0.0, 44.0)),
                                 );
                                 if selected {
                                     ui.painter().hline(
@@ -381,6 +540,7 @@ impl eframe::App for GadarahApp {
                                 }
                                 ui.add_space(16.0);
                             }
+                            let _ = needs_setup; // reserved for future dashboard hook
                         });
                     });
 
@@ -398,9 +558,60 @@ impl eframe::App for GadarahApp {
                                     0 => {
                                         mascot::show(ui, &self.mascot, time_secs);
                                         ui.add_space(12.0);
+                                        let needs_setup = {
+                                            let g = state.lock().unwrap();
+                                            matches!(
+                                                g.connection_status,
+                                                ConnectionStatus::Disconnected
+                                            ) || g.selected_firm.is_none()
+                                        };
+                                        if needs_setup {
+                                            let mut jump_to_config = false;
+                                            theme::card().show(ui, |ui| {
+                                                ui.label(
+                                                    RichText::new("Finish setup first")
+                                                        .color(theme::FORGE_GOLD)
+                                                        .strong()
+                                                        .size(15.0),
+                                                );
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    RichText::new(
+                                                        "Connect a broker and pick a firm profile in \
+                                                         Config before you can start the trading \
+                                                         daemon.",
+                                                    )
+                                                    .color(theme::TEXT)
+                                                    .size(12.5),
+                                                );
+                                                ui.add_space(8.0);
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            RichText::new("Open Config")
+                                                                .color(egui::Color32::WHITE)
+                                                                .strong(),
+                                                        )
+                                                        .fill(theme::FORGE_GOLD_DIM),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    jump_to_config = true;
+                                                }
+                                            });
+                                            if jump_to_config {
+                                                self.selected_tab = CONFIG_TAB_IDX;
+                                            }
+                                            ui.add_space(12.0);
+                                        }
                                         DashboardPanel::show(ui, &state);
                                     }
-                                    1 => self.trading_panel.show(ui, &state),
+                                    1 => {
+                                        self.trading_panel.show(ui, &state);
+                                        if let Some(idx) = self.trading_panel.request_tab.take() {
+                                            self.selected_tab = idx;
+                                        }
+                                    }
                                     2 => SessionsPanel::show(ui, &state),
                                     3 => PriceChartPanel::show(ui, &state),
                                     4 => self.performance_panel.show(ui, &state),

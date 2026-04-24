@@ -13,6 +13,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+const DRY_RUN_UNLOCK_SECS: u64 = 30;
 
 use eframe::egui;
 use egui::RichText;
@@ -60,6 +63,58 @@ pub struct TradingPanel {
     /// Set true when the user has asked to start in Live mode; main.rs's
     /// live-confirm modal will flip this back and we'll proceed.
     pending_live_launch: bool,
+    /// When the current DryRun child started; used to qualify it for the
+    /// preflight unlock (≥30 s runtime before it counts).
+    current_run_started_at: Option<Instant>,
+    /// True once at least one DryRun session has been started AND run for
+    /// DRY_RUN_UNLOCK_SECS this app session. Required to unlock Live mode.
+    dry_run_completed_this_session: bool,
+    /// Tab index a row's "Fix it" button wants main.rs to navigate to. main.rs
+    /// reads and clears per frame.
+    pub request_tab: Option<usize>,
+    /// One-shot mascot coaching events produced by the Trading flow. main.rs
+    /// drains these into the mascot bubble.
+    pending_mascot_event: Option<MascotEvent>,
+}
+
+/// Coaching events the Trading panel wants the mascot to react to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MascotEvent {
+    PreflightComplete,
+    LaunchAcknowledged(TradingMode),
+    StoppedByUser,
+}
+
+/// Computed once per frame and shared across preflight rows + button gating.
+struct PreflightState {
+    connection_status: ConnectionStatus,
+    connected: bool,
+    firm_selected: bool,
+    risk_acknowledged: bool,
+    kill_switch_configured: bool,
+    dry_run_completed: bool,
+}
+
+impl PreflightState {
+    /// Return true when every gate required for `mode` is green. Dry Run
+    /// unlocks first (broker + firm), Demo adds risk + kill-switch, Live
+    /// additionally requires a completed dry-run this session.
+    fn gates_for(&self, mode: TradingMode) -> bool {
+        let base = self.connected && self.firm_selected;
+        match mode {
+            TradingMode::DryRun => base,
+            TradingMode::DemoExecute => {
+                base && self.risk_acknowledged && self.kill_switch_configured
+            }
+            TradingMode::LiveExecute => {
+                base
+                    && self.risk_acknowledged
+                    && self.kill_switch_configured
+                    && self.dry_run_completed
+                    && matches!(self.connection_status, ConnectionStatus::ConnectedLive)
+            }
+        }
+    }
 }
 
 impl Default for TradingPanel {
@@ -71,6 +126,10 @@ impl Default for TradingPanel {
             log_rx: None,
             tail: VecDeque::with_capacity(300),
             pending_live_launch: false,
+            current_run_started_at: None,
+            dry_run_completed_this_session: false,
+            request_tab: None,
+            pending_mascot_event: None,
         }
     }
 }
@@ -98,17 +157,8 @@ impl TradingPanel {
     pub fn show(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
         self.pump_events(app_state);
 
-        let (connected, status, selected_firm) = {
-            let g = app_state.lock().unwrap();
-            (
-                matches!(
-                    g.connection_status,
-                    ConnectionStatus::ConnectedDemo | ConnectionStatus::ConnectedLive
-                ),
-                g.connection_status,
-                g.selected_firm.clone(),
-            )
-        };
+        let preflight = self.preflight_snapshot(app_state);
+        let status = preflight.connection_status;
 
         theme::heading(ui, "Trading");
         ui.label(
@@ -121,47 +171,9 @@ impl TradingPanel {
         );
         ui.add_space(14.0);
 
-        // ── Guardrails ────────────────────────────────────────────────────────
-        if !connected {
-            theme::card().show(ui, |ui| {
-                ui.label(
-                    RichText::new("Not connected to a broker")
-                        .color(theme::RED)
-                        .strong()
-                        .size(14.0),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "Open the Config tab and finish Broker Setup before starting \
-                         trading.",
-                    )
-                    .color(theme::MUTED)
-                    .size(12.0),
-                );
-            });
-            return;
-        }
-        if selected_firm.is_none() {
-            theme::card().show(ui, |ui| {
-                ui.label(
-                    RichText::new("No firm challenge selected")
-                        .color(theme::RED)
-                        .strong()
-                        .size(14.0),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "Pick a firm profile in the Config tab so the daemon knows which \
-                         rule set to enforce.",
-                    )
-                    .color(theme::MUTED)
-                    .size(12.0),
-                );
-            });
-            return;
-        }
+        // ── Preflight readiness checklist ────────────────────────────────────
+        self.show_preflight_card(ui, &preflight);
+        ui.add_space(12.0);
 
         // ── Mode selector ────────────────────────────────────────────────────
         theme::card().show(ui, |ui| {
@@ -213,6 +225,7 @@ impl TradingPanel {
                     self.status,
                     TradingStatus::Starting | TradingStatus::Stopping
                 );
+                let preflight_ok = preflight.gates_for(self.mode);
                 let start_label = match self.mode {
                     TradingMode::DryRun => "Start Dry Run",
                     TradingMode::DemoExecute => "Start Demo Trading",
@@ -225,7 +238,7 @@ impl TradingPanel {
                 };
                 if ui
                     .add_enabled(
-                        !running && !transitioning,
+                        !running && !transitioning && preflight_ok,
                         egui::Button::new(
                             RichText::new(start_label)
                                 .color(egui::Color32::WHITE)
@@ -297,6 +310,135 @@ impl TradingPanel {
                     });
             }
         });
+    }
+
+    /// Snapshot of every gate the preflight card evaluates, so the UI can
+    /// render row-by-row statuses without taking and releasing the state lock
+    /// for each read.
+    fn preflight_snapshot(&self, app_state: &AppState) -> PreflightState {
+        let g = app_state.lock().unwrap();
+        let connection_status = g.connection_status;
+        let connected = matches!(
+            connection_status,
+            ConnectionStatus::ConnectedDemo | ConnectionStatus::ConnectedLive
+        );
+        let firm_selected = g.selected_firm.is_some();
+        let risk_ack = g.risk_acknowledged;
+        let ks_configured = g.config.kill_switch.daily_dd_trigger_pct
+            > rust_decimal::Decimal::ZERO
+            && g.config.kill_switch.total_dd_trigger_pct > rust_decimal::Decimal::ZERO;
+        let dry_run_done = self.dry_run_completed_this_session;
+        PreflightState {
+            connection_status,
+            connected,
+            firm_selected,
+            risk_acknowledged: risk_ack,
+            kill_switch_configured: ks_configured,
+            dry_run_completed: dry_run_done,
+        }
+    }
+
+    fn show_preflight_card(&mut self, ui: &mut egui::Ui, p: &PreflightState) {
+        theme::card().show(ui, |ui| {
+            theme::section_label(ui, "PREFLIGHT");
+            ui.label(
+                RichText::new("Gates unlock in order: Dry Run → Demo → LIVE.")
+                    .color(theme::MUTED)
+                    .size(11.5),
+            );
+            ui.add_space(8.0);
+            self.row(ui, p.connected, "Broker connected", "Open Config → Broker Setup", 8);
+            self.row(
+                ui,
+                p.firm_selected,
+                "Firm profile selected",
+                "Pick a challenge in Config",
+                8,
+            );
+            self.row(
+                ui,
+                p.risk_acknowledged,
+                "Risk limits acknowledged",
+                "Review + acknowledge in Config → Auto-Stop Rules",
+                8,
+            );
+            self.row(
+                ui,
+                p.kill_switch_configured,
+                "Kill switch configured",
+                "Set DD triggers in Config",
+                8,
+            );
+            self.row(
+                ui,
+                p.dry_run_completed,
+                "Dry run completed this session (≥30 s)",
+                "Start a Dry Run below to unlock LIVE",
+                0,
+            );
+
+            // Summary of what each mode needs.
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                let needed = |label: &str, ok: bool| -> RichText {
+                    RichText::new(format!(
+                        "{} {label}",
+                        if ok { "✓" } else { "○" }
+                    ))
+                    .color(if ok { theme::GREEN } else { theme::MUTED })
+                    .size(11.5)
+                };
+                ui.label(needed("Dry Run ready", p.gates_for(TradingMode::DryRun)));
+                ui.label(RichText::new("·").color(theme::MUTED));
+                ui.label(needed("Demo ready", p.gates_for(TradingMode::DemoExecute)));
+                ui.label(RichText::new("·").color(theme::MUTED));
+                ui.label(needed("Live ready", p.gates_for(TradingMode::LiveExecute)));
+            });
+        });
+    }
+
+    /// One row of the preflight card. `fix_tab_idx` is the main-tab index to
+    /// jump to via `request_tab` when the row is red and the user clicks "Fix".
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        ok: bool,
+        label: &str,
+        fix_hint: &str,
+        fix_tab_idx: usize,
+    ) {
+        ui.horizontal(|ui| {
+            let (dot, color) = if ok {
+                ("✓", theme::GREEN)
+            } else {
+                ("✗", theme::RED)
+            };
+            ui.label(RichText::new(dot).color(color).size(14.0).strong());
+            ui.add_space(6.0);
+            ui.label(RichText::new(label).color(theme::TEXT).size(13.0));
+            if !ok {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button(RichText::new("Fix").color(theme::FORGE_GOLD).size(11.0))
+                        .clicked()
+                    {
+                        self.request_tab = Some(fix_tab_idx);
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(fix_hint)
+                            .color(theme::MUTED)
+                            .size(11.0)
+                            .italics(),
+                    );
+                });
+            }
+        });
+    }
+
+    /// Drain the single pending mascot event produced by start/stop actions.
+    pub fn take_mascot_event(&mut self) -> Option<MascotEvent> {
+        self.pending_mascot_event.take()
     }
 
     fn handle_start(&mut self, app_state: &AppState) {
@@ -385,7 +527,9 @@ impl TradingPanel {
         }
         *self.child.lock().unwrap() = Some(child);
         self.status = TradingStatus::Running;
+        self.current_run_started_at = Some(Instant::now());
         self.tail.clear();
+        self.pending_mascot_event = Some(MascotEvent::LaunchAcknowledged(mode));
         app_state.lock().unwrap().add_log(
             LogLevel::Info,
             format!(
@@ -408,7 +552,34 @@ impl TradingPanel {
             let _ = child.kill();
             let _ = child.wait();
         }
+        drop(guard);
+        self.mark_run_ended(app_state, true);
+    }
+
+    fn mark_run_ended(&mut self, app_state: &AppState, by_user: bool) {
+        // If the ended run was a sufficiently-long DryRun, unlock Live.
+        if matches!(self.mode, TradingMode::DryRun) {
+            if let Some(started) = self.current_run_started_at {
+                if started.elapsed() >= Duration::from_secs(DRY_RUN_UNLOCK_SECS)
+                    && !self.dry_run_completed_this_session
+                {
+                    self.dry_run_completed_this_session = true;
+                    app_state.lock().unwrap().add_log(
+                        LogLevel::Info,
+                        format!(
+                            "Dry-run unlock satisfied ({} s) — LIVE mode available \
+                             once other gates are green.",
+                            DRY_RUN_UNLOCK_SECS
+                        ),
+                    );
+                }
+            }
+        }
+        self.current_run_started_at = None;
         self.status = TradingStatus::Stopped;
+        if by_user {
+            self.pending_mascot_event = Some(MascotEvent::StoppedByUser);
+        }
         app_state
             .lock()
             .unwrap()
@@ -435,16 +606,22 @@ impl TradingPanel {
         }
         // Did the child exit on its own?
         if matches!(self.status, TradingStatus::Running) {
-            let mut guard = self.child.lock().unwrap();
-            if let Some(child) = guard.as_mut() {
-                if let Ok(Some(status)) = child.try_wait() {
-                    let _ = guard.take();
-                    self.status = TradingStatus::Stopped;
-                    app_state.lock().unwrap().add_log(
-                        LogLevel::Warn,
-                        format!("gadarah daemon exited (status {})", status),
-                    );
+            let exited_status = {
+                let mut guard = self.child.lock().unwrap();
+                match guard.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
+                    Some(s) => {
+                        let _ = guard.take();
+                        Some(s)
+                    }
+                    None => None,
                 }
+            };
+            if let Some(status) = exited_status {
+                app_state.lock().unwrap().add_log(
+                    LogLevel::Warn,
+                    format!("gadarah daemon exited (status {})", status),
+                );
+                self.mark_run_ended(app_state, false);
             }
         }
     }

@@ -10,6 +10,7 @@ pub mod performance;
 pub mod price_chart;
 pub mod sessions;
 pub mod trading;
+pub mod welcome;
 
 pub use backtest::BacktestPanel;
 pub use config_tab::ConfigPanel;
