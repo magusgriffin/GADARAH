@@ -1,10 +1,12 @@
 //! GADARAH Installation Wizard entry point.
 //!
 //! A linear 5-step wizard (Welcome → License → Components → Install → Finish)
-//! with a procedurally-animated Binder assistant on the right. The wizard is
-//! a bootstrapper: the MSI payload still does the real install on Windows.
-//! On other platforms the wizard runs with a simulated install driver so the
-//! flow can be reviewed without a Windows box.
+//! with a procedurally-animated Binder assistant on the right. The wizard
+//! carries the full app payload as an embedded zip, extracts it to a
+//! per-user install path, writes shortcuts and uninstall metadata, and on
+//! Finish spawns the GUI directly. On non-Windows hosts the platform-only
+//! steps (shortcuts, registry, Ollama install) degrade to no-ops with
+//! explicit log lines so the flow can be reviewed end-to-end on Linux.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -388,10 +390,46 @@ impl eframe::App for WizardApp {
                 );
             });
 
+        if self.launch_requested {
+            self.launch_requested = false;
+            if let Err(err) = spawn_gui(self.install_state.target.as_deref()) {
+                self.install_state
+                    .log
+                    .push(format!("[launch] failed: {err}"));
+                // Leave the wizard open so the user can see the failure.
+            } else {
+                self.close_requested = true;
+            }
+        }
+
         if self.close_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+}
+
+/// Spawn `gadarah-gui` from the install directory, with CWD set to the
+/// install path so the GUI's relative `config/gadarah.toml` lookup resolves
+/// against the installed tree. On non-Windows hosts this is still useful for
+/// smoke-testing — we launch the `gadarah-gui` binary if it happens to be
+/// present next to the wizard's configured target.
+fn spawn_gui(install_dir: Option<&std::path::Path>) -> std::io::Result<()> {
+    let Some(dir) = install_dir else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "install target not set",
+        ));
+    };
+    let exe_name = if cfg!(windows) {
+        "gadarah-gui.exe"
+    } else {
+        "gadarah-gui"
+    };
+    let exe = dir.join(exe_name);
+    std::process::Command::new(&exe)
+        .current_dir(dir)
+        .spawn()
+        .map(|_| ())
 }
 
 fn main() -> eframe::Result<()> {

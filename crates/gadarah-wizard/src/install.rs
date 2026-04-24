@@ -219,13 +219,10 @@ fn run_install(tx: Sender<InstallEvent>, components: ComponentSelection, target:
     }
 
     if components.install_ollama {
-        step!(tx, "Queuing Ollama + DeepSeek R1 1.5B download", 0.92);
-        match queue_ollama_install(&target) {
-            Ok(()) => log!(
-                tx,
-                "Ollama installer marker written — run `install_ollama.ps1` post-install"
-            ),
-            Err(e) => log!(tx, format!("Ollama queue skipped: {e}")),
+        step!(tx, "Installing Ollama + DeepSeek R1 1.5B", 0.92);
+        match run_ollama_installer(&target, &tx) {
+            Ok(()) => log!(tx, "Ollama install step finished"),
+            Err(e) => log!(tx, format!("Ollama install failed: {e}")),
         }
     }
 
@@ -398,7 +395,74 @@ fn write_uninstall_metadata(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn queue_ollama_install(target: &Path) -> Result<(), String> {
-    let marker = target.join("install_ollama.flag");
-    std::fs::write(&marker, "requested").map_err(|e| e.to_string())
+/// On Windows, spawn `powershell -ExecutionPolicy Bypass -File install_ollama.ps1`
+/// from the install directory (where the payload has just been extracted). The
+/// script downloads OllamaSetup.exe, runs the silent installer, waits for the
+/// local API at 127.0.0.1:11434 to respond, and pulls `deepseek-r1:1.5b`. We
+/// stream stdout lines as InstallEvent::Log so the wizard's log panel shows
+/// real progress from the installer.
+///
+/// On non-Windows hosts the script is a PowerShell file and there's no
+/// runtime to execute it — log the situation and bail cleanly.
+fn run_ollama_installer(target: &Path, tx: &Sender<InstallEvent>) -> Result<(), String> {
+    let script = target.join("install_ollama.ps1");
+    if !script.is_file() {
+        return Err(format!(
+            "install_ollama.ps1 not found at {} — payload missing the script",
+            script.display()
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script.display().to_string(),
+            ])
+            .current_dir(target)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn powershell: {e}"))?;
+        if let Some(out) = child.stdout.take() {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    let _ = tx.send(InstallEvent::Log(format!("[ollama] {line}")));
+                }
+            });
+        }
+        if let Some(err_pipe) = child.stderr.take() {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(err_pipe).lines().map_while(Result::ok) {
+                    let _ = tx.send(InstallEvent::Log(format!("[ollama!] {line}")));
+                }
+            });
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("wait powershell: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "install_ollama.ps1 exited with status {status}"
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tx;
+        let _ = script;
+        let _ = target;
+        let _ = tx.send(InstallEvent::Log(
+            "install_ollama.ps1 skipped: only Windows hosts can run the installer".into(),
+        ));
+        Ok(())
+    }
 }

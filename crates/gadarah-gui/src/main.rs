@@ -502,6 +502,15 @@ fn show_live_confirm(ctx: &egui::Context, app: &mut GadarahApp) {
 }
 
 fn main() -> eframe::Result<()> {
+    // Hydrate the process env from .env.* next to the binary (install dir).
+    // `gadarah auth` writes these files and the CLI reads them via
+    // std::env::var; without this hook the GUI can't see the credentials
+    // when a user launches via Start Menu / Launch GADARAH button.
+    // `from_filename_override` is a silent no-op when a file is missing.
+    for candidate in [".env", ".env.demo", ".env.live"] {
+        let _ = dotenvy::from_filename_override(candidate);
+    }
+
     let state = Arc::new(Mutex::new(SharedState::default()));
 
     // If --state-file <path> is passed, spawn a background thread that re-reads

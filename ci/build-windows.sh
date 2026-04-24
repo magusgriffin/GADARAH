@@ -22,7 +22,7 @@ set -euo pipefail
 
 TARGET="x86_64-pc-windows-gnu"
 DIST="target/dist"
-mkdir -p "$DIST" "$DIST/config/firms"
+mkdir -p "$DIST" "$DIST/config" "$DIST/config/firms"
 
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
     BUILDER=(cargo build --release --target "$TARGET")
@@ -45,18 +45,20 @@ echo "[1/4] Building gadarah (CLI) + gadarah-gui"
 cp "target/$TARGET/release/gadarah.exe" "$DIST/"
 cp "target/$TARGET/release/gadarah-gui.exe" "$DIST/"
 cp -r config/firms/*.toml "$DIST/config/firms/"
+cp config/gadarah.toml "$DIST/config/"
+cp wix/install_ollama.ps1 "$DIST/"
 [ -f README.md ] && cp README.md "$DIST/"
 
 echo "[2/4] Packing payload.zip"
 PAYLOAD="$PWD/$DIST/payload.zip"
 rm -f "$PAYLOAD"
 if command -v zip >/dev/null 2>&1; then
-    (cd "$DIST" && zip -qr "$PAYLOAD" gadarah.exe gadarah-gui.exe config/)
+    (cd "$DIST" && zip -qr "$PAYLOAD" gadarah.exe gadarah-gui.exe install_ollama.ps1 config/)
 else
     python3 - "$DIST" "$PAYLOAD" <<'PY'
 import os, sys, zipfile
 dist, out = sys.argv[1], sys.argv[2]
-include = ["gadarah.exe", "gadarah-gui.exe", "config"]
+include = ["gadarah.exe", "gadarah-gui.exe", "install_ollama.ps1", "config"]
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for entry in include:
         path = os.path.join(dist, entry)

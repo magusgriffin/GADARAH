@@ -24,7 +24,20 @@ use gadarah_data::{
 const DEFAULT_CONFIG_PATH: &str = "config/gadarah.toml";
 const DEFAULT_DB_PATH: &str = "data/gadarah.db";
 
+/// Hydrate the process environment from `.env` / `.env.demo` / `.env.live` in
+/// the current working directory, if any exist. `gadarah auth` writes those
+/// files; Windows has no `source`, so without this hook the CLI would never
+/// see the broker credentials. `from_filename_override` is a silent no-op
+/// when the file doesn't exist.
+fn load_env_files() {
+    for candidate in [".env", ".env.demo", ".env.live"] {
+        let _ = dotenvy::from_filename_override(candidate);
+    }
+}
+
 fn main() {
+    load_env_files();
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");

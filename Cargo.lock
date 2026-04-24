@@ -724,6 +724,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1111,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-backtest"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "gadarah-broker",
@@ -1130,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-broker"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "bytes",
  "chrono",
@@ -1158,10 +1164,11 @@ dependencies = [
 
 [[package]]
 name = "gadarah-cli"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "ctrlc",
+ "dotenvy",
  "gadarah-backtest",
  "gadarah-broker",
  "gadarah-core",
@@ -1185,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-core"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "proptest",
@@ -1199,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-data"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "gadarah-core",
@@ -1218,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-feed"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1236,10 +1243,11 @@ dependencies = [
 
 [[package]]
 name = "gadarah-gui"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "dirs",
+ "dotenvy",
  "eframe",
  "egui",
  "egui_plot",
@@ -1264,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-risk"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1281,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-wizard"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "dirs",
  "eframe",

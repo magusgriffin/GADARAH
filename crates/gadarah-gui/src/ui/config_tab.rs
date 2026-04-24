@@ -1,13 +1,25 @@
 //! Configuration panel — Connect your broker, set risk limits, choose your firm
 
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::thread;
 
 use eframe::egui;
 use egui::RichText;
 
+use gadarah_broker::auth::{run_oauth_flow, save_credentials, AuthResult, SavedCredentials, TradingAccount};
+
 use crate::config::{FirmConfig, GadarahConfig};
 use crate::state::{AppState, ConnectionStatus, LogLevel, SharedState};
 use crate::theme;
+
+/// Events emitted by the OAuth worker thread.
+enum AuthEvent {
+    Log(String),
+    /// Completed with an AuthResult — user must now pick an account.
+    NeedAccountPick(AuthResult, String, String),
+    Failed(String),
+}
 
 pub struct ConfigPanel {
     base_risk_pct: String,
@@ -19,6 +31,15 @@ pub struct ConfigPanel {
     cooldown_minutes: String,
     pending_save: bool,
     synced: bool,
+    // Broker OAuth flow state
+    setup_open: bool,
+    broker_client_id: String,
+    broker_client_secret: String,
+    auth_rx: Option<Receiver<AuthEvent>>,
+    auth_busy: bool,
+    /// After OAuth returns, the user picks which ctid account to bind.
+    pending_accounts: Option<(AuthResult, String, String)>,
+    pending_account_idx: usize,
 }
 
 impl ConfigPanel {
@@ -33,6 +54,51 @@ impl ConfigPanel {
             cooldown_minutes: "30".to_string(),
             pending_save: false,
             synced: false,
+            setup_open: false,
+            broker_client_id: String::new(),
+            broker_client_secret: String::new(),
+            auth_rx: None,
+            auth_busy: false,
+            pending_accounts: None,
+            pending_account_idx: 0,
+        }
+    }
+
+    /// Drain any pending OAuth worker events. Call from `show()` every frame.
+    fn pump_auth(&mut self, app_state: &AppState) {
+        let Some(rx) = self.auth_rx.as_ref() else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(AuthEvent::Log(msg)) => {
+                    app_state
+                        .lock()
+                        .unwrap()
+                        .add_log(LogLevel::Info, msg);
+                }
+                Ok(AuthEvent::NeedAccountPick(result, cid, csec)) => {
+                    self.auth_busy = false;
+                    self.pending_account_idx = 0;
+                    self.pending_accounts = Some((result, cid, csec));
+                    app_state
+                        .lock()
+                        .unwrap()
+                        .add_log(LogLevel::Info, "OAuth complete — pick an account below.");
+                }
+                Ok(AuthEvent::Failed(err)) => {
+                    self.auth_busy = false;
+                    app_state
+                        .lock()
+                        .unwrap()
+                        .add_log(LogLevel::Error, format!("OAuth failed: {err}"));
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.auth_rx = None;
+                    break;
+                }
+            }
         }
     }
 
@@ -48,6 +114,9 @@ impl ConfigPanel {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
+        // Drain any pending events from the OAuth worker thread before rendering.
+        self.pump_auth(app_state);
+
         let (conn_status, daily_target, selected_firm, available_firms, firm_config) = {
             let g = app_state.lock().unwrap();
             if !self.synced {
@@ -110,44 +179,48 @@ impl ConfigPanel {
 
             ui.horizontal(|ui| {
                 if !connected {
+                    let label = if self.setup_open { "Hide Setup" } else { "Broker Setup" };
                     if ui
                         .add_sized(
                             [140.0, 36.0],
                             egui::Button::new(
-                                RichText::new("Connect")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
+                                RichText::new(label).color(egui::Color32::WHITE).strong(),
                             )
                             .fill(egui::Color32::from_rgb(0, 130, 95)),
                         )
                         .clicked()
                     {
-                        let mut g = app_state.lock().unwrap();
-                        g.connection_status = ConnectionStatus::ConnectedDemo;
-                        g.add_log(LogLevel::Info, "Connected to demo account 5772124");
+                        self.setup_open = !self.setup_open;
                     }
                     ui.label(
-                        RichText::new("Connect to start receiving live market data.")
-                            .color(theme::MUTED)
-                            .size(12.0),
-                    );
-                } else {
-                    if ui
-                        .add_sized(
-                            [140.0, 36.0],
-                            egui::Button::new(
-                                RichText::new("Disconnect").color(egui::Color32::WHITE),
-                            )
-                            .fill(egui::Color32::from_rgb(120, 40, 40)),
+                        RichText::new(
+                            "Open the setup card to enter your cTrader client ID / secret.",
                         )
-                        .clicked()
-                    {
-                        let mut g = app_state.lock().unwrap();
-                        g.connection_status = ConnectionStatus::Disconnected;
-                        g.add_log(LogLevel::Info, "Disconnected from broker");
-                    }
+                        .color(theme::MUTED)
+                        .size(12.0),
+                    );
+                } else if ui
+                    .add_sized(
+                        [140.0, 36.0],
+                        egui::Button::new(
+                            RichText::new("Disconnect").color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(120, 40, 40)),
+                    )
+                    .clicked()
+                {
+                    let mut g = app_state.lock().unwrap();
+                    g.connection_status = ConnectionStatus::Disconnected;
+                    g.add_log(LogLevel::Info, "Disconnected from broker");
                 }
             });
+
+            if self.setup_open && !connected {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+                self.show_broker_setup(ui, app_state);
+            }
         });
 
         ui.add_space(12.0);
@@ -455,6 +528,209 @@ impl ConfigPanel {
                 );
             }
         });
+    }
+
+    fn show_broker_setup(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
+        theme::section_label(ui, "BROKER SETUP (cTrader OAuth)");
+        ui.add_space(6.0);
+
+        if let Some((result, _cid, _csec)) = &self.pending_accounts {
+            // Account picker — shown after OAuth exchange returns the account list.
+            ui.label(
+                RichText::new("Pick the trading account to bind to GADARAH:")
+                    .color(theme::TEXT)
+                    .size(12.5),
+            );
+            ui.add_space(4.0);
+            let accounts = result.accounts.clone();
+            let summary = |a: &TradingAccount| -> String {
+                format!(
+                    "#{}  {}  {}",
+                    a.ctid_trader_account_id,
+                    if a.is_live { "LIVE" } else { "DEMO" },
+                    a.broker_name.clone().unwrap_or_else(|| "—".into()),
+                )
+            };
+            egui::ComboBox::from_id_salt("broker_acct_pick")
+                .width(420.0)
+                .selected_text(
+                    accounts
+                        .get(self.pending_account_idx)
+                        .map(summary)
+                        .unwrap_or_else(|| "— select —".into()),
+                )
+                .show_ui(ui, |ui| {
+                    for (i, acct) in accounts.iter().enumerate() {
+                        ui.selectable_value(&mut self.pending_account_idx, i, summary(acct));
+                    }
+                });
+            ui.add_space(8.0);
+            if ui
+                .add_sized(
+                    [150.0, 32.0],
+                    egui::Button::new(
+                        RichText::new("Save + Connect")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(egui::Color32::from_rgb(0, 130, 95)),
+                )
+                .clicked()
+            {
+                self.finalize_auth(app_state);
+            }
+            return;
+        }
+
+        ui.label(
+            RichText::new(
+                "Paste the client ID and secret for your Spotware OAuth app. \
+                 The button below opens your browser to authorize GADARAH; the \
+                 callback is caught on http://localhost:5555.",
+            )
+            .color(theme::MUTED)
+            .size(12.0),
+        );
+        ui.add_space(8.0);
+
+        egui::Grid::new("broker_creds_grid")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                ui.label(RichText::new("Client ID:").color(theme::TEXT));
+                ui.add_sized(
+                    [340.0, 26.0],
+                    egui::TextEdit::singleline(&mut self.broker_client_id),
+                );
+                ui.end_row();
+                ui.label(RichText::new("Client Secret:").color(theme::TEXT));
+                ui.add_sized(
+                    [340.0, 26.0],
+                    egui::TextEdit::singleline(&mut self.broker_client_secret).password(true),
+                );
+                ui.end_row();
+            });
+
+        ui.add_space(8.0);
+        let can_start = !self.broker_client_id.trim().is_empty()
+            && !self.broker_client_secret.trim().is_empty()
+            && !self.auth_busy;
+        ui.horizontal(|ui| {
+            let label = if self.auth_busy {
+                "Waiting for browser…"
+            } else {
+                "Start OAuth"
+            };
+            if ui
+                .add_enabled(
+                    can_start,
+                    egui::Button::new(
+                        RichText::new(label).color(egui::Color32::WHITE).strong(),
+                    )
+                    .fill(egui::Color32::from_rgb(0, 130, 95))
+                    .min_size(egui::vec2(150.0, 32.0)),
+                )
+                .clicked()
+            {
+                self.start_auth(app_state);
+            }
+            if self.auth_busy {
+                ui.label(
+                    RichText::new("Check your browser and approve the request.")
+                        .color(theme::YELLOW)
+                        .size(12.0),
+                );
+            }
+        });
+    }
+
+    fn start_auth(&mut self, app_state: &AppState) {
+        self.auth_busy = true;
+        let (tx, rx) = channel();
+        self.auth_rx = Some(rx);
+        let cid = self.broker_client_id.trim().to_string();
+        let csec = self.broker_client_secret.trim().to_string();
+        // Clear the secret field immediately — the worker thread has its own copy.
+        self.broker_client_secret.clear();
+        app_state
+            .lock()
+            .unwrap()
+            .add_log(LogLevel::Info, "Starting OAuth flow; browser will open.");
+        let _ = thread::Builder::new()
+            .name("gadarah-oauth".into())
+            .spawn(move || {
+                let _ = tx.send(AuthEvent::Log(
+                    "Opening browser for Spotware authorization…".into(),
+                ));
+                match run_oauth_flow(&cid, &csec) {
+                    Ok(result) => {
+                        let _ = tx.send(AuthEvent::Log(format!(
+                            "Authorization complete — {} account(s) available",
+                            result.accounts.len()
+                        )));
+                        let _ = tx.send(AuthEvent::NeedAccountPick(result, cid, csec));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AuthEvent::Failed(e.to_string()));
+                    }
+                }
+            });
+    }
+
+    fn finalize_auth(&mut self, app_state: &AppState) {
+        let Some((result, cid, csec)) = self.pending_accounts.take() else {
+            return;
+        };
+        let idx = self.pending_account_idx.min(result.accounts.len().saturating_sub(1));
+        let Some(selected) = result.accounts.get(idx).cloned() else {
+            app_state
+                .lock()
+                .unwrap()
+                .add_log(LogLevel::Error, "No accounts available to save.");
+            return;
+        };
+        let env_file = if selected.is_live {
+            ".env.live"
+        } else {
+            ".env.demo"
+        };
+        let creds = SavedCredentials {
+            client_id: cid,
+            client_secret: csec,
+            access_token: result.access_token.clone(),
+            refresh_token: result.refresh_token.clone(),
+            ctid_account_id: selected.ctid_trader_account_id,
+            is_live: selected.is_live,
+        };
+        match save_credentials(env_file, &creds) {
+            Ok(()) => {
+                // Hydrate this process's env so the live loop sees the new creds
+                // without a restart.
+                let _ = dotenvy::from_filename_override(env_file);
+                let status = if selected.is_live {
+                    ConnectionStatus::ConnectedLive
+                } else {
+                    ConnectionStatus::ConnectedDemo
+                };
+                let mut g = app_state.lock().unwrap();
+                g.connection_status = status;
+                g.add_log(
+                    LogLevel::Info,
+                    format!(
+                        "Credentials saved to {env_file}; bound ctid {}",
+                        selected.ctid_trader_account_id
+                    ),
+                );
+            }
+            Err(e) => {
+                app_state
+                    .lock()
+                    .unwrap()
+                    .add_log(LogLevel::Error, format!("Failed to save credentials: {e}"));
+                // Put the accounts back so the user can retry.
+                self.pending_accounts = Some((result, creds.client_id, creds.client_secret));
+            }
+        }
     }
 
     fn select_firm(&self, app_state: &AppState, firm_name: &str) {
