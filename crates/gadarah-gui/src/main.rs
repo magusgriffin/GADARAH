@@ -14,7 +14,7 @@ use gadarah_gui::{
     theme,
     ui::{
         BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, OraclePanel, PayoutPanel,
-        PerformancePanel, PriceChartPanel, SessionsPanel,
+        PerformancePanel, PriceChartPanel, SessionsPanel, TradingPanel,
     },
     widgets::{
         demo_banner,
@@ -30,6 +30,7 @@ struct GadarahApp {
     performance_panel: PerformancePanel,
     payout_panel: PayoutPanel,
     oracle_panel: OraclePanel,
+    trading_panel: TradingPanel,
     oracle_cfg: OracleConfig,
     oracle: OracleHandle,
     mascot: MascotState,
@@ -53,6 +54,7 @@ impl GadarahApp {
             performance_panel: PerformancePanel::default(),
             payout_panel: PayoutPanel::default(),
             oracle_panel: OraclePanel::default(),
+            trading_panel: TradingPanel::default(),
             oracle_cfg,
             oracle,
             mascot: MascotState::default(),
@@ -189,7 +191,10 @@ impl eframe::App for GadarahApp {
         let banner_status = self.state.lock().unwrap().connection_status;
         demo_banner::show(ctx, banner_status);
 
-        // ── Live-trading confirmation (fires once per ConnectedLive session) ─
+        // ── Live-trading confirmation ───────────────────────────────────────
+        // Fires on the first `ConnectedLive` tick of a session, AND whenever
+        // the Trading tab has queued a LIVE start. Both paths flow through
+        // the same modal so the user sees exactly one "are you sure" prompt.
         if matches!(banner_status, ConnectionStatus::ConnectedLive)
             && !self.pending_live_confirm
             && !self
@@ -198,6 +203,9 @@ impl eframe::App for GadarahApp {
                 .unwrap()
                 .live_acknowledged
         {
+            self.pending_live_confirm = true;
+        }
+        if self.trading_panel.is_awaiting_live_confirmation() && !self.pending_live_confirm {
             self.pending_live_confirm = true;
         }
         if self.pending_live_confirm {
@@ -339,6 +347,7 @@ impl eframe::App for GadarahApp {
                         ui.horizontal_centered(|ui| {
                             let tabs = [
                                 "Dashboard",
+                                "Trading",
                                 "Sessions",
                                 "Chart",
                                 "Performance",
@@ -391,18 +400,19 @@ impl eframe::App for GadarahApp {
                                         ui.add_space(12.0);
                                         DashboardPanel::show(ui, &state);
                                     }
-                                    1 => SessionsPanel::show(ui, &state),
-                                    2 => PriceChartPanel::show(ui, &state),
-                                    3 => self.performance_panel.show(ui, &state),
-                                    4 => self.backtest_panel.show(ui, &state),
-                                    5 => self.payout_panel.show(ui, &state),
-                                    6 => self.oracle_panel.show(
+                                    1 => self.trading_panel.show(ui, &state),
+                                    2 => SessionsPanel::show(ui, &state),
+                                    3 => PriceChartPanel::show(ui, &state),
+                                    4 => self.performance_panel.show(ui, &state),
+                                    5 => self.backtest_panel.show(ui, &state),
+                                    6 => self.payout_panel.show(ui, &state),
+                                    7 => self.oracle_panel.show(
                                         ui,
                                         &mut self.oracle_cfg,
                                         Some(&self.oracle.tx),
                                     ),
-                                    7 => self.config_panel.show(ui, &state),
-                                    8 => LogsPanel::show(ui, &state),
+                                    8 => self.config_panel.show(ui, &state),
+                                    9 => LogsPanel::show(ui, &state),
                                     _ => {}
                                 }
                             });
@@ -466,23 +476,28 @@ fn show_live_confirm(ctx: &egui::Context, app: &mut GadarahApp) {
                     g.add_log(LogLevel::Warn, "User acknowledged live trading mode");
                     drop(g);
                     app.pending_live_confirm = false;
+                    // If the Trading tab has a queued LIVE start, kick it off now.
+                    if app.trading_panel.is_awaiting_live_confirmation() {
+                        app.trading_panel.resume_after_confirm(&app.state);
+                    }
                 }
                 ui.add_space(8.0);
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("Switch back to paper").color(theme::TEXT),
+                            RichText::new("Cancel").color(theme::TEXT),
                         )
                         .fill(egui::Color32::from_rgb(24, 28, 36)),
                     )
                     .clicked()
                 {
-                    // We cannot physically disconnect the broker from the GUI;
-                    // log the request and keep the modal up.
-                    let mut g = app.state.lock().unwrap();
-                    g.add_log(
+                    app.pending_live_confirm = false;
+                    if app.trading_panel.is_awaiting_live_confirmation() {
+                        app.trading_panel.cancel_live_launch();
+                    }
+                    app.state.lock().unwrap().add_log(
                         LogLevel::Warn,
-                        "User requested switch back to paper — disconnect the live broker daemon to comply",
+                        "Live-trading launch cancelled by user.",
                     );
                 }
             });

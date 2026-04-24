@@ -9,6 +9,7 @@ pub mod payout;
 pub mod performance;
 pub mod price_chart;
 pub mod sessions;
+pub mod trading;
 
 pub use backtest::BacktestPanel;
 pub use config_tab::ConfigPanel;
@@ -19,6 +20,7 @@ pub use payout::PayoutPanel;
 pub use performance::PerformancePanel;
 pub use price_chart::PriceChartPanel;
 pub use sessions::SessionsPanel;
+pub use trading::TradingPanel;
 
 use gadarah_backtest::ChallengeRules;
 
