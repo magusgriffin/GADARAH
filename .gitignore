@@ -10,6 +10,12 @@ data/*.db
 .codex
 .claude/
 
-# Local-only planning scratchpad; kept on disk, never shipped.
+# Local-only planning / readiness scratchpads; kept on disk, never shipped.
 plan.md
+Gplan.md
+gptplan.md
+OPUSPLAN.md
+SYNTHESIS.md
+ULTIMATE.md
+PROJECT_READINESS_*.md
 
