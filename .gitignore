@@ -9,3 +9,7 @@ data/*.db
 .blackbox/
 .codex
 .claude/
+
+# Local-only planning scratchpad; kept on disk, never shipped.
+plan.md
+
