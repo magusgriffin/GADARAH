@@ -56,6 +56,16 @@ pub struct MonteCarloResult {
     pub paths_run: usize,
     pub ruin_count: usize,
     pub ruin_probability: Decimal,
+    /// 95% confidence interval on the ruin probability, lower bound.
+    /// Computed via Wilson score interval — appropriate for a binomial
+    /// proportion with any sample size (including near-zero ruin counts).
+    #[serde(default)]
+    pub ruin_ci95_low: Decimal,
+    /// 95% confidence interval on the ruin probability, upper bound.
+    /// The upper bound is what prop-firm risk desks care about: "there's
+    /// a 95% chance the true blow-up rate is at most this value."
+    #[serde(default)]
+    pub ruin_ci95_high: Decimal,
     pub median_final_balance: Decimal,
     pub p5_final_balance: Decimal,
     pub p25_final_balance: Decimal,
@@ -82,6 +92,8 @@ pub fn run_monte_carlo(
             paths_run: 0,
             ruin_count: 0,
             ruin_probability: Decimal::ZERO,
+            ruin_ci95_low: Decimal::ZERO,
+            ruin_ci95_high: Decimal::ZERO,
             median_final_balance: starting_balance,
             p5_final_balance: starting_balance,
             p25_final_balance: starting_balance,
@@ -160,10 +172,15 @@ pub fn run_monte_carlo(
         sorted[idx.min(sorted.len() - 1)]
     };
 
+    let ruin_probability = Decimal::from(ruin_count) / Decimal::from(config.num_paths);
+    let (ci_low, ci_high) = wilson_interval(ruin_count, config.num_paths);
+
     MonteCarloResult {
         paths_run: config.num_paths,
         ruin_count,
-        ruin_probability: Decimal::from(ruin_count) / Decimal::from(config.num_paths),
+        ruin_probability,
+        ruin_ci95_low: ci_low,
+        ruin_ci95_high: ci_high,
         median_final_balance: percentile(&final_balances, 0.50),
         p5_final_balance: percentile(&final_balances, 0.05),
         p25_final_balance: percentile(&final_balances, 0.25),
@@ -173,6 +190,30 @@ pub fn run_monte_carlo(
         median_drawdown_pct: percentile(&max_drawdowns, 0.50),
         p95_drawdown_pct: percentile(&max_drawdowns, 0.95),
     }
+}
+
+/// Wilson score 95% confidence interval for a binomial proportion.
+/// Robust at the extremes — unlike the normal approximation, it doesn't
+/// return negative lower bounds or >1 upper bounds when `k/n` is near 0
+/// or 1. This is the right interval for ruin probability from N paths.
+fn wilson_interval(k: usize, n: usize) -> (Decimal, Decimal) {
+    if n == 0 {
+        return (Decimal::ZERO, Decimal::ZERO);
+    }
+    let z: f64 = 1.959_963_984_540_054; // 95% two-sided
+    let n_f = n as f64;
+    let p = k as f64 / n_f;
+    let denom = 1.0 + z * z / n_f;
+    let center = (p + z * z / (2.0 * n_f)) / denom;
+    let margin = z * ((p * (1.0 - p) / n_f) + z * z / (4.0 * n_f * n_f)).sqrt() / denom;
+    let lo = (center - margin).max(0.0);
+    let hi = (center + margin).min(1.0);
+    // Snap near-zero floats to exact zero so callers can assert on the
+    // boundary without worrying about 1e-18 precision noise.
+    let snap = |v: f64| if v.abs() < 1e-9 { Decimal::ZERO } else {
+        Decimal::from_f64_retain(v).unwrap_or(Decimal::ZERO)
+    };
+    (snap(lo), snap(hi))
 }
 
 /// Pick the effective block length, or `None` when iid was requested.
@@ -323,6 +364,24 @@ mod tests {
         let streaky = streaky_trades();
         let block_len = auto_block_length(&streaky);
         assert!(block_len >= 3);
+    }
+
+    #[test]
+    fn wilson_interval_brackets_point_estimate() {
+        // Known case: 50 ruins out of 1000 → p = 0.05, Wilson ~ [0.038, 0.066].
+        let (lo, hi) = wilson_interval(50, 1000);
+        assert!(lo > dec!(0.030));
+        assert!(lo < dec!(0.050));
+        assert!(hi > dec!(0.050));
+        assert!(hi < dec!(0.080));
+    }
+
+    #[test]
+    fn wilson_interval_handles_zero_ruins() {
+        // 0 ruins out of 100 → point estimate 0, but upper bound still > 0.
+        let (lo, hi) = wilson_interval(0, 100);
+        assert_eq!(lo, Decimal::ZERO);
+        assert!(hi > Decimal::ZERO);
     }
 
     #[test]

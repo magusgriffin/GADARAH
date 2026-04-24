@@ -43,12 +43,12 @@ use gadarah_data::{
 };
 use gadarah_feed::{BarStreamer, Tick as FeedTick};
 use gadarah_risk::{
-    calculate_lots, can_add_pyramid, create_pyramid_layer, AccountPhase, AccountState,
-    ComplianceBlackoutWindow, ComplianceOpenExposure, CorrelationGuard, CorrelationGuardConfig,
-    DailyPnlConfig, DailyPnlEngine, ExecutionConfig as RiskExecutionConfig,
+    calculate_lots, can_add_pyramid, create_pyramid_layer, trading_day_index, AccountPhase,
+    AccountState, ComplianceBlackoutWindow, ComplianceOpenExposure, CorrelationGuard,
+    CorrelationGuardConfig, DailyPnlConfig, DailyPnlEngine, ExecutionConfig as RiskExecutionConfig,
     ExecutionEngine as RiskExecutionEngine, FillRecord, KillSwitch, PositionRef, PreTradeGate,
     PropFirmComplianceManager, ProtectiveCloseReason, PyramidAddCandidate, PyramidConfig,
-    PyramidState, RiskDecision, RiskPercent, SizingInputs,
+    PyramidState, RiskDecision, RiskPercent, SizingInputs, SwapTable,
 };
 
 use crate::config::{load_config, load_firm_config, FirmConfigFile, GadarahConfig};
@@ -116,6 +116,13 @@ struct LiveRuntime {
     /// Once true, new entries are refused and the live loop emits a payout-
     /// ready notification.
     profit_target_halted: bool,
+    /// Per-symbol overnight swap-rate table. Consulted every time the
+    /// 5 pm NY rollover index advances and a position is still open.
+    swap_table: SwapTable,
+    /// Accumulated swap P&L (USD) applied to account equity locally. The
+    /// broker also books swap on its side; we track the delta to feed
+    /// the GUI and to detect divergence.
+    swap_pnl_total: Decimal,
 }
 
 pub fn run_backtest(args: &[String]) {
@@ -931,6 +938,8 @@ pub fn run_live(args: &[String]) {
         trading_days: std::collections::HashSet::new(),
         last_day: -1,
         profit_target_halted: false,
+        swap_table: SwapTable::seeded(),
+        swap_pnl_total: Decimal::ZERO,
     };
 
     // Position recovery: restore positions_by_head from DB + broker reconcile.
@@ -1322,8 +1331,14 @@ fn process_live_bar(
                 };
 
                 let pip_val = pip_value_for_signal(&ctx.symbol, signal.entry);
-                let cost_per_lot_usd =
-                    current_spread_pips * pip_val + commission_per_lot_usd(&ctx.symbol);
+                // Sizing accounts for real observed slippage: if the last
+                // 50 fills median ~2 pips, we deduct that from the risk
+                // budget so the real risked USD matches the configured %.
+                let observed_slippage_pips = runtime
+                    .execution
+                    .rolling_slippage_pips(50, dec!(0.3));
+                let cost_per_lot_usd = (current_spread_pips + observed_slippage_pips) * pip_val
+                    + commission_per_lot_usd(&ctx.symbol);
                 // Conservative default leverage (30:1) until FirmConfig
                 // surfaces per-firm leverage. 50% margin utilization cap
                 // leaves room for a second correlated position.
@@ -1552,15 +1567,40 @@ fn process_live_bar(
             let was_active = runtime.kill_switch.is_active();
             let now_active = runtime.kill_switch.check(&runtime.account, bar.timestamp);
 
-            // Trading-day tracker: first tick of a UTC day that actually has a
-            // closed trade bumps the counter. We detect day rollover here but
-            // only increment when a trade closes (handled in the exit path).
-            let current_day = bar.timestamp.div_euclid(86_400);
+            // Trading-day tracker + swap rollover. Day index is the 5pm NY
+            // trading day, matching prop-firm convention — aligns with the
+            // daily-PnL engine so the two never disagree about when "today"
+            // ends.
+            let current_day = trading_day_index(bar.timestamp);
             if current_day != runtime.last_day {
+                let prior_day = runtime.last_day;
                 runtime.last_day = current_day;
                 runtime.account.trading_days = runtime.trading_days.len() as u32;
                 runtime.account.min_days_met = runtime.account.trading_days
                     >= ctx.firm_file.firm.min_trading_days;
+                // Apply overnight swap to every position held across the
+                // rollover. Skip the very first rollover (`prior_day == -1`)
+                // because warmup already had no carry.
+                if prior_day >= 0 && !runtime.positions_by_head.is_empty() {
+                    let mut total = Decimal::ZERO;
+                    for pos in runtime.positions_by_head.values() {
+                        let charge = runtime.swap_table.charge_for_rollover(
+                            &pos.signal.symbol,
+                            pos.signal.direction,
+                            pos.lots,
+                            bar.timestamp,
+                        );
+                        total += charge;
+                    }
+                    if !total.is_zero() {
+                        runtime.swap_pnl_total += total;
+                        info!(
+                            "Swap rollover: {} positions, net {:.2} USD booked",
+                            runtime.positions_by_head.len(),
+                            total
+                        );
+                    }
+                }
             }
 
             // Profit-target halt: once we've met the target AND trading-days

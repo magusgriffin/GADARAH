@@ -11,6 +11,7 @@ pub mod kill_switch;
 pub mod performance_ledger;
 pub mod pyramid;
 pub mod sizing;
+pub mod swap;
 pub mod temporal;
 pub mod trade_manager;
 pub mod types;
@@ -23,7 +24,8 @@ pub use compliance::{
 };
 pub use consistency::ConsistencyTracker;
 pub use daily_pnl::{
-    DailyPnlConfig, DailyPnlEngine, DayState, ProtectiveClose, ProtectiveCloseReason,
+    trading_day_index, DailyPnlConfig, DailyPnlEngine, DayState, ProtectiveClose,
+    ProtectiveCloseReason,
 };
 pub use drift::{DriftBenchmarks, DriftConfig, DriftDetector, DriftSignal, TradeResult};
 pub use equity_curve::{EquityCurveFilter, EquityCurveFilterConfig};
@@ -42,6 +44,7 @@ pub use correlation::{
 };
 pub use gate::{ExecutionWitness, GateRequest, PreTradeGate};
 pub use sizing::{calculate_lots, kelly_risk_pct, EdgeStats, SizingInputs};
+pub use swap::{is_triple_swap_day, SwapTable};
 pub use temporal::{TemporalIntelligence, UrgencyProfile};
 pub use trade_manager::{OpenPosition, TradeAction, TradeManager, TradeManagerConfig};
 pub use types::{KillReason, RejectReason, RiskDecision, RiskError, RiskPercent, SizingError};

@@ -19,9 +19,25 @@ use crate::correlation::{CorrelationGuard, PortfolioAction, PositionRef};
 use crate::daily_pnl::DailyPnlEngine;
 use crate::execution::ExecutionEngine;
 use crate::kill_switch::KillSwitch;
-use crate::performance_ledger::PerformanceLedger;
+use crate::performance_ledger::{risk_of_ruin, PerformanceLedger};
 use crate::types::{RejectReason, RiskDecision, RiskPercent};
 use gadarah_core::{Regime9, Session};
+use rust_decimal_macros::dec;
+
+/// Default risk-of-ruin cap: 5% probability of blowing the account within
+/// the horizon. Firms with tighter daily/total DD can still pass orders
+/// up to this ceiling; the cap is a hard backstop, not a marginal dial.
+const DEFAULT_MAX_ROR: Decimal = dec!(0.05);
+
+/// Horizon (trades) over which RoR is computed. 200 trades is roughly one
+/// month of active scalp-style activity — long enough to be conservative,
+/// short enough not to exaggerate compounding.
+const ROR_HORIZON_TRADES: u32 = 200;
+
+/// Minimum segment sample size before the posterior is trusted by the EV /
+/// RoR gates. Below this, the gate skips both checks to avoid blocking on
+/// noise from the first few trades.
+const POSTERIOR_MIN_SAMPLES: u32 = 15;
 
 /// Compile-time proof that a `PreTradeGate::evaluate` has approved this order.
 /// Construction is private to this module, so every order path must route
@@ -154,7 +170,41 @@ impl<'a> PreTradeGate<'a> {
             }
         }
 
-        // 8. Prop-firm compliance (A13)
+        // 8. Expected value + risk-of-ruin. Only enforced once the segment
+        //    has enough samples for its posterior to be meaningful; below
+        //    that threshold new heads get a fair shake.
+        if let Some(ledger) = self.performance_ledger {
+            if let Some(stats) = ledger.get_stats(req.signal.head, req.regime, req.session) {
+                if stats.total_trades >= POSTERIOR_MIN_SAMPLES {
+                    let p = stats.win_rate();
+                    let tp_r = stats
+                        .avg_tp_r()
+                        .or_else(|| req.signal.rr_ratio())
+                        .unwrap_or(dec!(1));
+                    let sl_r = dec!(1); // by convention, losers close at −1R
+
+                    // Expected value gate: block if negative given history.
+                    let ev = p * tp_r - (dec!(1) - p) * sl_r;
+                    if ev <= Decimal::ZERO {
+                        return reject(req.signal, RejectReason::NegativeExpectedValue);
+                    }
+
+                    // Risk-of-ruin gate.
+                    let ror = risk_of_ruin(
+                        p,
+                        tp_r,
+                        sl_r,
+                        req.risk_pct.as_fraction(),
+                        ROR_HORIZON_TRADES,
+                    );
+                    if ror > DEFAULT_MAX_ROR {
+                        return reject(req.signal, RejectReason::RiskOfRuinExceeded);
+                    }
+                }
+            }
+        }
+
+        // 9. Prop-firm compliance (A13)
         if let Err(rej) = self.compliance.evaluate_entry(
             &req.signal,
             req.risk_pct.inner(),

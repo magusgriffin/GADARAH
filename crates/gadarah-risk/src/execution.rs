@@ -524,7 +524,20 @@ impl ExecutionEngine {
         FillStats {
             total_fills: total,
             avg_slippage_pips: avg_slippage,
+            median_slippage_pips: median_slippage_last(&self.fill_log, 50),
         }
+    }
+
+    /// Rolling median slippage over the last `n` fills, in pips. Median is
+    /// preferred over mean for sizing because a single catastrophic fill
+    /// would otherwise drag the estimate and cause chronic underfills on
+    /// every subsequent order. Returns the static-default when there are
+    /// fewer than 5 recent fills — too noisy below that.
+    pub fn rolling_slippage_pips(&self, n: usize, default_pips: Decimal) -> Decimal {
+        if self.fill_log.len() < 5 {
+            return default_pips;
+        }
+        median_slippage_last(&self.fill_log, n)
     }
 
     /// Record an externally-executed fill so live and backtest paths can share
@@ -542,6 +555,30 @@ impl ExecutionEngine {
 pub struct FillStats {
     pub total_fills: usize,
     pub avg_slippage_pips: Decimal,
+    /// Median slippage over the last 50 fills. Less sensitive to outlier
+    /// flash-crash fills than `avg_slippage_pips`, preferred for sizing.
+    #[serde(default)]
+    pub median_slippage_pips: Decimal,
+}
+
+fn median_slippage_last(log: &VecDeque<FillRecord>, n: usize) -> Decimal {
+    let take = log.len().min(n);
+    if take == 0 {
+        return Decimal::ZERO;
+    }
+    let mut recent: Vec<Decimal> = log
+        .iter()
+        .rev()
+        .take(take)
+        .map(|f| f.slippage_pips)
+        .collect();
+    recent.sort();
+    let mid = recent.len() / 2;
+    if recent.len() % 2 == 0 {
+        (recent[mid - 1] + recent[mid]) / dec!(2)
+    } else {
+        recent[mid]
+    }
 }
 
 #[cfg(test)]

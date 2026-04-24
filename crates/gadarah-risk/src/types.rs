@@ -100,6 +100,13 @@ pub enum RejectReason {
     RegimeConfidenceLow,
     MtfCounterTrend,
     PartialFillRejected,
+    /// Expected value of this trade is non-positive given the latest
+    /// segment posterior and the signal's own R:R.
+    NegativeExpectedValue,
+    /// Kelly-calibrated risk-of-ruin for the current sizing exceeds the
+    /// firm-configured cap. Blocks orders that would be statistically
+    /// likely to blow the account given the current edge.
+    RiskOfRuinExceeded,
 }
 
 /// Stable, machine-readable reasons the kill switch was armed. Used in place of
@@ -159,6 +166,8 @@ impl std::fmt::Display for RejectReason {
             Self::RegimeConfidenceLow => write!(f, "Regime confidence below threshold"),
             Self::MtfCounterTrend => write!(f, "Counter to higher-timeframe bias"),
             Self::PartialFillRejected => write!(f, "Partial fill below minimum"),
+            Self::NegativeExpectedValue => write!(f, "Negative expected value"),
+            Self::RiskOfRuinExceeded => write!(f, "Risk-of-ruin above firm cap"),
         }
     }
 }

@@ -61,6 +61,11 @@ pub struct WalkForwardResult {
     pub folds: Vec<FoldResult>,
     pub combined_oos_stats: BacktestStats,
     pub oos_degradation_pct: Decimal,
+    /// Count of folds whose IS→OOS Sharpe drop exceeds 40%.
+    pub sharpe_degraded_folds: usize,
+    /// Count of folds where IS expectancy was positive but OOS expectancy
+    /// turned negative — the clearest overfit signal.
+    pub expectancy_flip_folds: usize,
     pub passed: bool,
 }
 
@@ -210,15 +215,43 @@ where
     let fold_sharpes_ok = folds
         .iter()
         .all(|f| f.out_of_sample_stats.sharpe_ratio >= wf_config.min_fold_sharpe);
+
+    // IS→OOS Sharpe degradation: flag when OOS Sharpe dropped below 60%
+    // of the IS baseline. A Sharpe that collapsed from 1.4 IS to 0.5 OOS
+    // has lost most of its edge to overfitting even if PF still looks OK.
+    let sharpe_degraded_folds = folds
+        .iter()
+        .filter(|f| {
+            let is_s = f.in_sample_stats.sharpe_ratio;
+            let oos_s = f.out_of_sample_stats.sharpe_ratio;
+            is_s > dec!(0.3) && oos_s < is_s * dec!(0.6)
+        })
+        .count();
+
+    // Expectancy flip: IS avg_r > 0 but OOS avg_r < 0. A single fold flip
+    // is the definition of an overfit parameter set; any count > 0 should
+    // kill the promotion.
+    let expectancy_flip_folds = folds
+        .iter()
+        .filter(|f| {
+            f.in_sample_stats.avg_r_multiple > Decimal::ZERO
+                && f.out_of_sample_stats.avg_r_multiple < Decimal::ZERO
+        })
+        .count();
+
     let passed = !folds.is_empty()
         && combined_oos_stats.profit_factor > Decimal::ONE
         && oos_degradation_pct < wf_config.max_oos_degradation_pct
-        && fold_sharpes_ok;
+        && fold_sharpes_ok
+        && expectancy_flip_folds == 0
+        && sharpe_degraded_folds * 2 <= folds.len();
 
     Ok(WalkForwardResult {
         folds,
         combined_oos_stats,
         oos_degradation_pct,
+        sharpe_degraded_folds,
+        expectancy_flip_folds,
         passed,
     })
 }
