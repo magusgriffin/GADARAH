@@ -50,7 +50,28 @@ cp -r config/firms/*.toml "$DIST/config/firms/"
 echo "[2/4] Packing payload.zip"
 PAYLOAD="$PWD/$DIST/payload.zip"
 rm -f "$PAYLOAD"
-(cd "$DIST" && zip -qr "$PAYLOAD" gadarah.exe gadarah-gui.exe config/)
+if command -v zip >/dev/null 2>&1; then
+    (cd "$DIST" && zip -qr "$PAYLOAD" gadarah.exe gadarah-gui.exe config/)
+else
+    python3 - "$DIST" "$PAYLOAD" <<'PY'
+import os, sys, zipfile
+dist, out = sys.argv[1], sys.argv[2]
+include = ["gadarah.exe", "gadarah-gui.exe", "config"]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for entry in include:
+        path = os.path.join(dist, entry)
+        if not os.path.exists(path):
+            continue
+        if os.path.isfile(path):
+            z.write(path, arcname=entry)
+            continue
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, dist)
+                z.write(full, arcname=rel)
+PY
+fi
 
 echo "[3/4] Building gadarah-wizard with embedded payload"
 GADARAH_WIZARD_PAYLOAD="$PAYLOAD" "${BUILDER[@]}" -p gadarah-wizard

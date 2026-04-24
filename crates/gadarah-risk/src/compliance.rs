@@ -133,10 +133,6 @@ impl FirmProgram {
     fn is_ftmo(&self) -> bool {
         matches!(self, Self::FtmoOneStep | Self::FtmoTwoStep)
     }
-
-    fn is_the5ers(&self) -> bool {
-        matches!(self, Self::The5ersHyperGrowth)
-    }
 }
 
 // ---------------------------------------------------------------------------
