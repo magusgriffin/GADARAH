@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use gadarah_core::{Direction, HeadId, RegimeSignal9};
 
 use crate::config::{FirmConfig, GadarahConfig};
+use crate::notifications::{self, NotificationSettings};
 
 /// RFC-4180 field escape: wrap in quotes (with interior `"` doubled) iff the
 /// field contains a comma, quote, or line break; otherwise emit unchanged.
@@ -337,6 +338,10 @@ pub struct SharedState {
     /// True on first app launch (no `welcome_seen.flag` in config dir).
     /// Drives the first-run welcome overlay.
     pub show_welcome_overlay: bool,
+    /// Notification preferences. Loaded from `$CONFIG/gadarah/notifications.json`
+    /// at startup; `push_alert` reads it inline to decide whether to fire an
+    /// OS toast / webhook.
+    pub notification_settings: NotificationSettings,
 }
 
 const MAX_ALERTS: usize = 100;
@@ -401,6 +406,7 @@ impl Default for SharedState {
             live_acknowledged: false,
             risk_acknowledged: false,
             show_welcome_overlay: false,
+            notification_settings: NotificationSettings::default(),
         }
     }
 }
@@ -466,7 +472,11 @@ impl SharedState {
     }
 
     /// Push an alert. Older alerts are dropped once the cap is reached.
+    /// Also fires the external dispatcher (OS toast + optional webhook) on
+    /// a worker thread; that path no-ops cheaply when the alert is below
+    /// `notification_settings.min_severity` or both channels are disabled.
     pub fn push_alert(&mut self, alert: Alert) {
+        notifications::dispatch(&alert, &self.notification_settings);
         self.alerts.push_back(alert);
         while self.alerts.len() > MAX_ALERTS {
             self.alerts.pop_front();

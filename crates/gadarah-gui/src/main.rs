@@ -10,6 +10,7 @@ use egui::RichText;
 use gadarah_gui::{
     config::GadarahConfig,
     first_run,
+    notifications::NotificationSettings,
     oracle::{OracleConfig, OracleHandle, OracleReply},
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
@@ -79,6 +80,12 @@ impl GadarahApp {
         // `$CONFIG/gadarah/welcome_seen.flag` once the user dismisses it.
         if first_run::is_first_run() {
             app.state.lock().unwrap().show_welcome_overlay = true;
+        }
+        // Load saved notification preferences (OS toasts + webhook). Default
+        // is "Warning+" toasts on, webhook off — safe for a fresh install.
+        {
+            let mut g = app.state.lock().unwrap();
+            g.notification_settings = NotificationSettings::load();
         }
         // Background update check: hits the GitHub Releases API, pushes an
         // Info alert with an "Update Now" button into `state.alerts` if a

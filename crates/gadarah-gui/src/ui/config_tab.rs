@@ -10,7 +10,8 @@ use egui::RichText;
 use gadarah_broker::auth::{run_oauth_flow, save_credentials, AuthResult, SavedCredentials, TradingAccount};
 
 use crate::config::{FirmConfig, GadarahConfig};
-use crate::state::{AppState, ConnectionStatus, LogLevel, SharedState};
+use crate::notifications::{self, NotificationSettings, WebhookKind};
+use crate::state::{AlertSeverity, AppState, ConnectionStatus, LogLevel, SharedState};
 use crate::theme;
 
 /// Events emitted by the OAuth worker thread.
@@ -516,6 +517,11 @@ impl ConfigPanel {
 
         ui.add_space(14.0);
 
+        // ── Notifications ─────────────────────────────────────────────────────
+        self.show_notifications_card(ui, app_state);
+
+        ui.add_space(14.0);
+
         // ── Save / Reload buttons ─────────────────────────────────────────────
         ui.horizontal(|ui| {
             let save_fill = if self.pending_save {
@@ -564,6 +570,138 @@ impl ConfigPanel {
                 );
             }
         });
+    }
+
+    fn show_notifications_card(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
+        // Pull a working copy out of state so the user can edit without
+        // holding the mutex across the whole UI block.
+        let mut settings = app_state.lock().unwrap().notification_settings.clone();
+        let original = settings.clone();
+
+        theme::card().show(ui, |ui| {
+            theme::section_label(
+                ui,
+                "NOTIFICATIONS — OS toasts and outbound webhooks",
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Surface alerts beyond the in-app banner. Critical events (kill-switch \
+                     trips, vol halts, daily-stop) ping you even when GADARAH is minimised.",
+                )
+                .color(theme::MUTED)
+                .size(11.5),
+            );
+            ui.add_space(10.0);
+
+            // Master OS toggle.
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut settings.os_enabled, "Send OS notifications");
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new("Threshold:")
+                        .color(theme::MUTED)
+                        .size(11.5),
+                );
+                egui::ComboBox::from_id_salt("notify-min-severity")
+                    .selected_text(severity_label(settings.min_severity))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut settings.min_severity,
+                            AlertSeverity::Info,
+                            "Info and above",
+                        );
+                        ui.selectable_value(
+                            &mut settings.min_severity,
+                            AlertSeverity::Warning,
+                            "Warning and above",
+                        );
+                        ui.selectable_value(
+                            &mut settings.min_severity,
+                            AlertSeverity::Danger,
+                            "Danger only",
+                        );
+                    });
+            });
+
+            ui.add_space(10.0);
+            theme::section_label(ui, "WEBHOOK (Discord / Slack / Generic)");
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Paste an incoming-webhook URL. Leave blank to disable. Discord and \
+                     Slack URLs are auto-detected by format; pick \"Generic\" to POST a \
+                     plain JSON body to a self-hosted receiver.",
+                )
+                .color(theme::MUTED)
+                .size(11.0),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Kind:").color(theme::MUTED).size(11.5));
+                egui::ComboBox::from_id_salt("notify-webhook-kind")
+                    .selected_text(webhook_kind_label(settings.webhook_kind))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut settings.webhook_kind,
+                            WebhookKind::Discord,
+                            "Discord",
+                        );
+                        ui.selectable_value(
+                            &mut settings.webhook_kind,
+                            WebhookKind::Slack,
+                            "Slack",
+                        );
+                        ui.selectable_value(
+                            &mut settings.webhook_kind,
+                            WebhookKind::Generic,
+                            "Generic JSON",
+                        );
+                    });
+            });
+            ui.add(
+                egui::TextEdit::singleline(&mut settings.webhook_url)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("https://discord.com/api/webhooks/... or https://hooks.slack.com/... "),
+            );
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let send_test_enabled =
+                    settings.os_enabled || !settings.webhook_url.trim().is_empty();
+                if ui
+                    .add_enabled(
+                        send_test_enabled,
+                        egui::Button::new(
+                            RichText::new("Send test notification").color(theme::TEXT),
+                        )
+                        .fill(egui::Color32::from_rgb(28, 35, 45)),
+                    )
+                    .clicked()
+                {
+                    notifications::send_test(&settings);
+                    app_state.lock().unwrap().add_log(
+                        LogLevel::Info,
+                        "Test notification dispatched.",
+                    );
+                }
+                if !send_test_enabled {
+                    ui.label(
+                        RichText::new("Enable OS toasts or paste a webhook URL first.")
+                            .italics()
+                            .color(theme::DIM)
+                            .size(11.0),
+                    );
+                }
+            });
+        });
+
+        // Persist + push back into state on any change. Save is cheap (small
+        // JSON file, off-render-thread risk is acceptable here for now).
+        if settings_changed(&original, &settings) {
+            settings.save();
+            app_state.lock().unwrap().notification_settings = settings;
+        }
     }
 
     fn show_broker_setup(&mut self, ui: &mut egui::Ui, app_state: &AppState) {
@@ -837,4 +975,27 @@ impl ConfigPanel {
             Err(e) => g.add_log(LogLevel::Error, format!("Reload failed: {}", e)),
         }
     }
+}
+
+fn severity_label(s: AlertSeverity) -> &'static str {
+    match s {
+        AlertSeverity::Info => "Info and above",
+        AlertSeverity::Warning => "Warning and above",
+        AlertSeverity::Danger => "Danger only",
+    }
+}
+
+fn webhook_kind_label(k: WebhookKind) -> &'static str {
+    match k {
+        WebhookKind::Discord => "Discord",
+        WebhookKind::Slack => "Slack",
+        WebhookKind::Generic => "Generic JSON",
+    }
+}
+
+fn settings_changed(a: &NotificationSettings, b: &NotificationSettings) -> bool {
+    a.os_enabled != b.os_enabled
+        || a.min_severity != b.min_severity
+        || a.webhook_kind != b.webhook_kind
+        || a.webhook_url != b.webhook_url
 }

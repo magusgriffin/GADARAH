@@ -1,0 +1,79 @@
+name: Release
+
+# Build the Windows artifacts (gadarah.exe, gadarah-gui.exe, gadarah-wizard.exe,
+# payload.zip, SHA256SUMS) and attach them to the GitHub release whenever a
+# v*.*.* tag is pushed. Mirrors what `./ci/build-windows.sh` does locally —
+# this lets us cut releases without depending on any one developer having
+# zig + cargo-zigbuild installed.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write   # required to upload assets to the release
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + Windows GNU target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ github.ref_name }}
+
+      - name: Build Windows artifacts
+        run: ./ci/build-windows.sh
+
+      - name: Generate SHA256SUMS
+        working-directory: target/dist
+        run: sha256sum gadarah.exe gadarah-gui.exe gadarah-wizard.exe payload.zip > SHA256SUMS
+
+      - name: Compute release notes
+        id: notes
+        run: |
+          {
+            echo "## GADARAH ${{ github.ref_name }}"
+            echo
+            echo "Windows artifacts built reproducibly via GitHub Actions."
+            echo
+            echo "Verify downloads with:"
+            echo
+            echo '```'
+            echo 'sha256sum -c SHA256SUMS'
+            echo '```'
+          } > release_notes.md
+          echo "notes_path=release_notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: GADARAH ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.notes_path }}
+          # `fail_on_unmatched_files: true` — if any artifact is missing,
+          # fail loud rather than ship a half-broken release.
+          fail_on_unmatched_files: true
+          files: |
+            target/dist/gadarah.exe
+            target/dist/gadarah-gui.exe
+            target/dist/gadarah-wizard.exe
+            target/dist/payload.zip
+            target/dist/SHA256SUMS
