@@ -26,6 +26,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
 
+      # The gadarah-broker crate's build.rs compiles cTrader protos via prost.
+      # Without protoc, the broker (and therefore the whole workspace) fails
+      # to build on a fresh runner.
+      - name: Install protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install zig
         uses: mlugg/setup-zig@v1
         with:
