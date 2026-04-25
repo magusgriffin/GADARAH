@@ -14,7 +14,9 @@ mod assistant;
 mod install;
 mod tabs;
 mod theme;
+mod uninstall;
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use eframe::egui::{self, CornerRadius, RichText, Stroke};
@@ -23,28 +25,70 @@ use crate::assistant::AssistantMood;
 use crate::install::InstallState;
 use crate::tabs::components::ComponentSelection;
 use crate::tabs::WizardTab;
+use crate::uninstall::UninstallState;
+
+/// What the wizard is actually doing this run. `Install` is the default
+/// greenfield path; `Update` runs when invoked with `--update` (or by an
+/// existing install dir being detected) and preserves user data;
+/// `Uninstall` runs when invoked with `--uninstall` (the UninstallString
+/// written by the install step points here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardMode {
+    Install,
+    Update,
+    Uninstall,
+}
+
+impl WizardMode {
+    pub fn from_argv() -> Self {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--uninstall") {
+            Self::Uninstall
+        } else if args.iter().any(|a| a == "--update") {
+            Self::Update
+        } else {
+            Self::Install
+        }
+    }
+}
 
 struct WizardApp {
+    mode: WizardMode,
     current_tab: WizardTab,
     reached: WizardTab,
     components: ComponentSelection,
     install_state: InstallState,
+    uninstall_state: UninstallState,
     license_accepted: bool,
     launch_requested: bool,
     close_requested: bool,
+    /// Populated in Update/Uninstall modes from registry or argv so the
+    /// wizard knows which install to target.
+    detected_install_dir: Option<PathBuf>,
     boot: Instant,
 }
 
-impl Default for WizardApp {
-    fn default() -> Self {
+impl WizardApp {
+    fn new(mode: WizardMode) -> Self {
+        let detected = match mode {
+            WizardMode::Install => None,
+            WizardMode::Update | WizardMode::Uninstall => uninstall::detect_install_dir(),
+        };
+        let mut components = ComponentSelection::default();
+        if let Some(dir) = detected.as_ref() {
+            components.install_path = dir.display().to_string();
+        }
         Self {
+            mode,
             current_tab: WizardTab::Welcome,
             reached: WizardTab::Welcome,
-            components: ComponentSelection::default(),
+            components,
             install_state: InstallState::default(),
-            license_accepted: false,
+            uninstall_state: UninstallState::default(),
+            license_accepted: mode != WizardMode::Install, // skip license on update/uninstall
             launch_requested: false,
             close_requested: false,
+            detected_install_dir: detected,
             boot: Instant::now(),
         }
     }
@@ -61,9 +105,19 @@ impl WizardApp {
             WizardTab::License => AssistantMood::Explaining,
             WizardTab::Components => AssistantMood::Explaining,
             WizardTab::Install => {
-                if self.install_state.error.is_some() {
+                let (error, finished) = match self.mode {
+                    WizardMode::Install | WizardMode::Update => (
+                        self.install_state.error.is_some(),
+                        self.install_state.finished,
+                    ),
+                    WizardMode::Uninstall => (
+                        self.uninstall_state.error.is_some(),
+                        self.uninstall_state.finished,
+                    ),
+                };
+                if error {
                     AssistantMood::Worry
-                } else if self.install_state.finished {
+                } else if finished {
                     AssistantMood::Triumph
                 } else {
                     AssistantMood::Working
@@ -74,20 +128,37 @@ impl WizardApp {
     }
 
     fn assistant_speech(&self) -> &'static str {
-        match self.current_tab {
-            WizardTab::Welcome => {
+        match (self.mode, self.current_tab) {
+            (WizardMode::Install, WizardTab::Welcome) => {
                 "Hail, operator. I am the Binder — I'll walk you through the \
                  sealing of GADARAH to your machine."
             }
-            WizardTab::License => {
+            (WizardMode::Update, WizardTab::Welcome) => {
+                "A new revision arrives. I'll re-etch the runes without disturbing \
+                 your charts or credentials."
+            }
+            (WizardMode::Uninstall, WizardTab::Welcome) => {
+                "So we part ways. I'll unbind GADARAH cleanly — your data lives \
+                 or perishes by your choice on the next page."
+            }
+            (_, WizardTab::License) => {
                 "Read the covenant carefully. Dual-licensed MIT or Apache — \
                  generous terms, but the disclaimer on trading risk stands."
             }
-            WizardTab::Components => {
+            (WizardMode::Install, WizardTab::Components) => {
                 "The GUI and the daemon are the essential runes. The Oracle \
                  is optional — it pulls a 1.1 GB model and can be added later."
             }
-            WizardTab::Install => {
+            (WizardMode::Update, WizardTab::Components) => {
+                "Components are locked during an update — only the binaries are \
+                 refreshed. Click Install when you're ready."
+            }
+            (WizardMode::Uninstall, WizardTab::Components) => {
+                "Tick the box to confirm. Your firm profiles and credentials are \
+                 spared by default — untick the second box only if you want a \
+                 truly clean slate."
+            }
+            (WizardMode::Install, WizardTab::Install) => {
                 if self.install_state.finished {
                     "The seal is complete. Your system is bound to GADARAH."
                 } else if self.install_state.error.is_some() {
@@ -96,9 +167,33 @@ impl WizardApp {
                     "Etching the runes. Do not interrupt the binding."
                 }
             }
-            WizardTab::Finish => {
+            (WizardMode::Update, WizardTab::Install) => {
+                if self.install_state.finished {
+                    "The refresh is complete. Your settings remain intact."
+                } else if self.install_state.error.is_some() {
+                    "A rune has fractured. Review the log below."
+                } else {
+                    "Re-etching the runes. Do not launch GADARAH yet."
+                }
+            }
+            (WizardMode::Uninstall, WizardTab::Install) => {
+                if self.uninstall_state.finished {
+                    "Unbinding complete. The forge stands empty."
+                } else if self.uninstall_state.error.is_some() {
+                    "The unbinding faltered. Review the log."
+                } else {
+                    "Unweaving the runes. A few seconds more."
+                }
+            }
+            (WizardMode::Install, WizardTab::Finish) => {
                 "The work is done. Launch the application or close this wizard \
                  — GADARAH will be waiting in your Start Menu."
+            }
+            (WizardMode::Update, WizardTab::Finish) => {
+                "Refresh complete. Relaunch GADARAH or pick this wizard up later."
+            }
+            (WizardMode::Uninstall, WizardTab::Finish) => {
+                "Done. Should you return, the wizard awaits in your Downloads."
             }
         }
     }
@@ -107,8 +202,19 @@ impl WizardApp {
         match self.current_tab {
             WizardTab::Welcome => true,
             WizardTab::License => self.license_accepted,
-            WizardTab::Components => !self.components.install_path.trim().is_empty(),
-            WizardTab::Install => self.install_state.finished,
+            WizardTab::Components => match self.mode {
+                WizardMode::Install | WizardMode::Update => {
+                    !self.components.install_path.trim().is_empty()
+                }
+                WizardMode::Uninstall => {
+                    self.uninstall_state.confirmed
+                        && self.detected_install_dir.is_some()
+                }
+            },
+            WizardTab::Install => match self.mode {
+                WizardMode::Install | WizardMode::Update => self.install_state.finished,
+                WizardMode::Uninstall => self.uninstall_state.finished,
+            },
             WizardTab::Finish => false,
         }
     }
@@ -120,14 +226,38 @@ impl WizardApp {
                 self.reached = next;
             }
             if next == WizardTab::Install {
-                self.install_state.start(&self.components);
+                match self.mode {
+                    WizardMode::Install => {
+                        self.install_state.start_with_mode(&self.components, false);
+                    }
+                    WizardMode::Update => {
+                        self.install_state.start_with_mode(&self.components, true);
+                    }
+                    WizardMode::Uninstall => {
+                        if let Some(dir) = self.detected_install_dir.clone() {
+                            self.uninstall_state.start(dir);
+                        } else {
+                            self.uninstall_state.error =
+                                Some("Could not detect an existing GADARAH install.".into());
+                            self.uninstall_state.finished = true;
+                        }
+                    }
+                }
             }
         }
     }
 
     fn retreat(&mut self) {
-        if self.current_tab == WizardTab::Install && self.install_state.started_at.is_some() {
-            return; // can't go back once installation has started
+        if self.current_tab == WizardTab::Install {
+            let in_progress = match self.mode {
+                WizardMode::Install | WizardMode::Update => {
+                    self.install_state.started_at.is_some()
+                }
+                WizardMode::Uninstall => self.uninstall_state.started_at.is_some(),
+            };
+            if in_progress {
+                return; // can't go back once work has started
+            }
         }
         if let Some(prev) = self.current_tab.prev() {
             self.current_tab = prev;
@@ -181,20 +311,68 @@ impl WizardApp {
 
     fn tab_body(&mut self, ui: &mut egui::Ui) {
         match self.current_tab {
-            WizardTab::Welcome => tabs::welcome::show(ui),
-            WizardTab::License => tabs::license::show(ui, &mut self.license_accepted),
-            WizardTab::Components => tabs::components::show(ui, &mut self.components),
+            WizardTab::Welcome => match self.mode {
+                WizardMode::Install => tabs::welcome::show(ui),
+                WizardMode::Update => tabs::welcome::show_update(
+                    ui,
+                    self.detected_install_dir.as_deref(),
+                ),
+                WizardMode::Uninstall => tabs::welcome::show_uninstall(
+                    ui,
+                    self.detected_install_dir.as_deref(),
+                ),
+            },
+            WizardTab::License => match self.mode {
+                WizardMode::Install => tabs::license::show(ui, &mut self.license_accepted),
+                // Update/Uninstall skip the license — the user already
+                // accepted it the first time. Render a one-line note so
+                // the tab isn't a blank rectangle.
+                WizardMode::Update | WizardMode::Uninstall => {
+                    tabs::license::show_skipped(ui);
+                }
+            },
+            WizardTab::Components => match self.mode {
+                WizardMode::Install => tabs::components::show(ui, &mut self.components),
+                WizardMode::Update => tabs::components::show_update(
+                    ui,
+                    &self.components,
+                    self.detected_install_dir.as_deref(),
+                ),
+                WizardMode::Uninstall => tabs::components::show_uninstall(
+                    ui,
+                    self.detected_install_dir.as_deref(),
+                    &mut self.uninstall_state.confirmed,
+                    &mut self.uninstall_state.keep_user_data,
+                ),
+            },
             WizardTab::Install => {
-                self.install_state.tick();
-                tabs::install::show(ui, &mut self.install_state);
-                if self.install_state.finished && self.current_tab == WizardTab::Install {
+                let (finished, title) = match self.mode {
+                    WizardMode::Install => {
+                        self.install_state.tick();
+                        tabs::install::show(ui, &mut self.install_state, "Installing GADARAH");
+                        (self.install_state.finished, "install")
+                    }
+                    WizardMode::Update => {
+                        self.install_state.tick();
+                        tabs::install::show(ui, &mut self.install_state, "Updating GADARAH");
+                        (self.install_state.finished, "update")
+                    }
+                    WizardMode::Uninstall => {
+                        self.uninstall_state.tick();
+                        tabs::install::show_uninstall(ui, &mut self.uninstall_state);
+                        (self.uninstall_state.finished, "uninstall")
+                    }
+                };
+                if finished && self.current_tab == WizardTab::Install {
+                    let _ = title;
                     // Auto-advance to Finish one frame after completion so the
                     // user sees the 100% bar briefly.
                     self.advance();
                 }
             }
-            WizardTab::Finish => tabs::finish::show(
+            WizardTab::Finish => tabs::finish::show_for_mode(
                 ui,
+                self.mode,
                 &mut self.launch_requested,
                 &mut self.close_requested,
             ),
@@ -446,7 +624,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             theme::setup(&cc.egui_ctx);
-            Ok(Box::new(WizardApp::default()))
+            Ok(Box::new(WizardApp::new(WizardMode::from_argv())))
         }),
     )
 }

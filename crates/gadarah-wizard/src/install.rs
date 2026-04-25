@@ -70,15 +70,21 @@ impl Default for InstallState {
 }
 
 impl InstallState {
-    /// Spawn the worker thread. Subsequent calls are no-ops.
-    pub fn start(&mut self, components: &ComponentSelection) {
+    /// Spawn the installer worker thread. `update` flips the behaviour:
+    /// - `.env.*` and `config/firms/*.toml` already present in `target` are
+    ///   left untouched (the payload extraction skips them).
+    /// - Start Menu / Desktop shortcuts and registry entries are still
+    ///   refreshed so a new `DisplayVersion` ends up in Add/Remove Programs.
+    /// - Log copy says "updating" instead of "installing".
+    pub fn start_with_mode(&mut self, components: &ComponentSelection, update: bool) {
         if self.started_at.is_some() {
             return;
         }
         let target = expand_install_path(&components.install_path);
         self.target = Some(target.clone());
         self.log.push(format!(
-            "[wizard] installing to {}",
+            "[wizard] {} {}",
+            if update { "updating" } else { "installing to" },
             target.display()
         ));
         let (tx, rx) = channel();
@@ -86,7 +92,7 @@ impl InstallState {
         let target_for_thread = target.clone();
         if let Err(err) = thread::Builder::new()
             .name("gadarah-wizard-install".into())
-            .spawn(move || run_install(tx, components, target_for_thread))
+            .spawn(move || run_install(tx, components, target_for_thread, update))
         {
             self.error = Some(format!("failed to spawn installer thread: {err}"));
             self.finished = true;
@@ -94,7 +100,12 @@ impl InstallState {
         }
         self.rx = Some(rx);
         self.started_at = Some(Instant::now());
-        self.current_step = "Starting installer".to_string();
+        self.current_step = if update {
+            "Starting updater"
+        } else {
+            "Starting installer"
+        }
+        .to_string();
     }
 
     /// Drain any queued events from the worker. Safe to call every frame.
@@ -155,7 +166,12 @@ impl InstallState {
     }
 }
 
-fn run_install(tx: Sender<InstallEvent>, components: ComponentSelection, target: PathBuf) {
+fn run_install(
+    tx: Sender<InstallEvent>,
+    components: ComponentSelection,
+    target: PathBuf,
+    update: bool,
+) {
     macro_rules! step {
         ($tx:expr, $label:expr, $p:expr) => {
             if $tx
@@ -184,8 +200,13 @@ fn run_install(tx: Sender<InstallEvent>, components: ComponentSelection, target:
         return;
     }
 
+    if update {
+        step!(tx, "Stopping running GADARAH processes", 0.12);
+        stop_running_processes(&tx);
+    }
+
     step!(tx, "Extracting app payload", 0.20);
-    match extract_payload(&target) {
+    match extract_payload(&target, update) {
         Ok(0) => {
             log!(tx, "payload is empty (dev build) — no files extracted");
         }
@@ -196,6 +217,12 @@ fn run_install(tx: Sender<InstallEvent>, components: ComponentSelection, target:
             let _ = tx.send(InstallEvent::Failed(format!("extract: {e}")));
             return;
         }
+    }
+
+    step!(tx, "Copying wizard into install dir", 0.45);
+    match copy_self_to_install(&target) {
+        Ok(path) => log!(tx, format!("uninstaller copied to {}", path.display())),
+        Err(e) => log!(tx, format!("wizard self-copy skipped: {e}")),
     }
 
     step!(tx, "Writing Start Menu shortcut", 0.55);
@@ -247,7 +274,7 @@ pub fn expand_install_path(raw: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn extract_payload(target: &Path) -> std::io::Result<usize> {
+fn extract_payload(target: &Path, preserve_user_data: bool) -> std::io::Result<usize> {
     if PAYLOAD_ZIP.len() <= 22 {
         // Empty-zip sentinel — nothing to extract.
         return Ok(0);
@@ -264,6 +291,19 @@ fn extract_payload(target: &Path) -> std::io::Result<usize> {
             continue;
         };
         let out = target.join(&relative);
+        // Update mode: skip files that look like user data so custom
+        // firm configs and .env.* credentials survive a refresh. The
+        // payload only contains default configs; if the user edited
+        // one locally, their edit is not clobbered.
+        if preserve_user_data {
+            let rel_str = relative.to_string_lossy();
+            let is_user_data = rel_str.starts_with(".env")
+                || rel_str.starts_with("config/gadarah.toml")
+                || rel_str.starts_with("config\\gadarah.toml");
+            if is_user_data && out.exists() {
+                continue;
+            }
+        }
         if entry.is_dir() {
             std::fs::create_dir_all(&out)?;
             continue;
@@ -278,6 +318,53 @@ fn extract_payload(target: &Path) -> std::io::Result<usize> {
         n += 1;
     }
     Ok(n)
+}
+
+/// Stop any running `gadarah-gui.exe` / `gadarah.exe` before replacing
+/// their binaries during an update. Failures are non-fatal; the worst
+/// case is the swap fails and the user has to retry.
+fn stop_running_processes(tx: &Sender<InstallEvent>) {
+    #[cfg(windows)]
+    {
+        for name in ["gadarah-gui.exe", "gadarah.exe"] {
+            match std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/IM", name])
+                .output()
+            {
+                Ok(_) => {
+                    let _ = tx.send(InstallEvent::Log(format!("taskkill {name}: ok")));
+                }
+                Err(e) => {
+                    let _ = tx.send(InstallEvent::Log(format!("taskkill {name}: {e}")));
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tx.send(InstallEvent::Log(
+            "skip process-kill on non-Windows host".into(),
+        ));
+    }
+}
+
+/// Copy the running wizard binary into the install dir so the
+/// UninstallString in the registry points at something that exists
+/// independent of the user's Downloads folder. If the wizard is already
+/// running from inside `target` (the update case), this is a no-op.
+fn copy_self_to_install(target: &Path) -> Result<PathBuf, String> {
+    let src = std::env::current_exe().map_err(|e| e.to_string())?;
+    let name = if cfg!(windows) {
+        "gadarah-wizard.exe"
+    } else {
+        "gadarah-wizard"
+    };
+    let dest = target.join(name);
+    if dest == src {
+        return Ok(dest);
+    }
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(dest)
 }
 
 fn write_start_menu_shortcut(target: &Path) -> Result<PathBuf, String> {
@@ -363,7 +450,14 @@ fn write_uninstall_metadata(target: &Path) -> Result<(), String> {
         .create_subkey_with_flags(UNINSTALL_KEY, KEY_WRITE)
         .map_err(|e| format!("open uninstall key: {e}"))?;
     let install_dir = target.display().to_string();
-    let uninstaller = target.join("gadarah-uninstall.exe").display().to_string();
+    // UninstallString must be the running wizard (copied into the install
+    // dir by `copy_self_to_install`), invoked with `--uninstall`. That's
+    // what Windows' Add/Remove Programs will run when the user clicks
+    // "Uninstall".
+    let uninstaller = format!(
+        "\"{}\" --uninstall",
+        target.join("gadarah-wizard.exe").display()
+    );
     key.set_value("DisplayName", &UNINSTALL_DISPLAY_NAME.to_string())
         .map_err(|e| format!("write DisplayName: {e}"))?;
     key.set_value("DisplayVersion", &env!("CARGO_PKG_VERSION").to_string())

@@ -1,6 +1,6 @@
 [package]
 name = "gadarah-wizard"
-version = "2.1.4"
+version = "2.1.5"
 edition = "2021"
 description = "Standalone installation wizard for GADARAH. Wraps the MSI payload with a tabbed UI and an animated Binder assistant."
 

@@ -12,6 +12,7 @@ use egui::RichText;
 
 use crate::state::{AlertSeverity, AppState};
 use crate::theme;
+use crate::update_check;
 
 const AUTO_EXPIRE_SECS: i64 = 30;
 
@@ -20,18 +21,29 @@ const AUTO_EXPIRE_SECS: i64 = 30;
 pub fn show(ctx: &egui::Context, state: &AppState) {
     let now = chrono::Utc::now().timestamp();
 
-    // Find the newest un-dismissed + unexpired alert, capture the index so
-    // the Dismiss button can clear it.
-    let (idx, severity, title, body) = {
+    // Find the newest un-dismissed alert. Update-prompt alerts ignore the
+    // 30 s expiry — they should stay until the user dismisses or applies
+    // them. Other alerts auto-expire.
+    let (idx, severity, title, body, action_url, action_update_wizard) = {
         let g = state.lock().unwrap();
-        let hit = g
-            .alerts
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, a)| !a.dismissed && now - a.timestamp < AUTO_EXPIRE_SECS);
+        let hit = g.alerts.iter().enumerate().rev().find(|(_, a)| {
+            if a.dismissed {
+                return false;
+            }
+            if a.action_update_wizard || a.action_url.is_some() {
+                return true;
+            }
+            now - a.timestamp < AUTO_EXPIRE_SECS
+        });
         match hit {
-            Some((i, a)) => (i, a.severity, a.title.clone(), a.body.clone()),
+            Some((i, a)) => (
+                i,
+                a.severity,
+                a.title.clone(),
+                a.body.clone(),
+                a.action_url.clone(),
+                a.action_update_wizard,
+            ),
             None => return,
         }
     };
@@ -60,8 +72,15 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
     };
 
     let mut dismiss = false;
+    let mut update_now = false;
+    let mut open_url_now = false;
+    let banner_height = if action_update_wizard || action_url.is_some() {
+        38.0
+    } else {
+        32.0
+    };
     egui::TopBottomPanel::top("alert-banner")
-        .exact_height(32.0)
+        .exact_height(banner_height)
         .frame(
             egui::Frame::new()
                 .fill(bg)
@@ -92,9 +111,60 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
                     {
                         dismiss = true;
                     }
+                    if action_update_wizard {
+                        ui.add_space(6.0);
+                        if ui
+                            .button(
+                                RichText::new("Update Now")
+                                    .color(egui::Color32::WHITE)
+                                    .size(11.5)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            update_now = true;
+                        }
+                    }
+                    if action_url.is_some() && !action_update_wizard {
+                        ui.add_space(6.0);
+                        if ui
+                            .button(
+                                RichText::new("Open")
+                                    .color(egui::Color32::WHITE)
+                                    .size(11.5)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            open_url_now = true;
+                        }
+                    }
                 });
             });
         });
+
+    if update_now {
+        match update_check::launch_update_wizard(action_url.as_deref()) {
+            Ok(()) => {
+                tracing::info!("update wizard launched");
+                if let Ok(mut g) = state.lock() {
+                    g.dismiss_alert(idx);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "update wizard launch failed"),
+        }
+    } else if open_url_now {
+        if let Some(url) = action_url.as_deref() {
+            match update_check::open_action_url(url) {
+                Ok(()) => {
+                    if let Ok(mut g) = state.lock() {
+                        g.dismiss_alert(idx);
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "open url failed"),
+            }
+        }
+    }
 
     if dismiss {
         state.lock().unwrap().dismiss_alert(idx);

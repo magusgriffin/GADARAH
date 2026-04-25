@@ -47,3 +47,25 @@ pub fn show(ui: &mut egui::Ui, accepted: &mut bool) {
         );
     });
 }
+
+/// Update / Uninstall flows skip the license — the user already accepted it
+/// the first time. Render a one-line note so the tab isn't a blank rectangle
+/// in the linear flow.
+pub fn show_skipped(ui: &mut egui::Ui) {
+    theme::card().show(ui, |ui| {
+        ui.label(
+            RichText::new("License — already accepted")
+                .heading()
+                .color(theme::FORGE_GOLD),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "You accepted the GADARAH license (MIT OR Apache-2.0) when you first installed \
+                 the application. There's nothing to review here — click Next to continue.",
+            )
+            .color(theme::TEXT)
+            .size(13.0),
+        );
+    });
+}

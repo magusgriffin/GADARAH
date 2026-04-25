@@ -18,6 +18,7 @@ use gadarah_gui::{
         BacktestPanel, ConfigPanel, DashboardPanel, LogsPanel, OraclePanel, PayoutPanel,
         PerformancePanel, PriceChartPanel, SessionsPanel, TradingPanel,
     },
+    update_check,
     widgets::{
         alert_banner, demo_banner,
         mascot::{self, MascotMood, MascotState, MascotSubsystem},
@@ -79,6 +80,11 @@ impl GadarahApp {
         if first_run::is_first_run() {
             app.state.lock().unwrap().show_welcome_overlay = true;
         }
+        // Background update check: hits the GitHub Releases API, pushes an
+        // Info alert with an "Update Now" button into `state.alerts` if a
+        // newer version is available. Spawned once per launch; cached
+        // server-side at most once per 6 h.
+        update_check::spawn(app.state.clone());
         app
     }
 

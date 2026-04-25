@@ -9,6 +9,7 @@ pub mod oracle;
 pub mod state;
 pub mod theme;
 pub mod ui;
+pub mod update_check;
 pub mod widgets;
 
 pub use config::GadarahConfig;

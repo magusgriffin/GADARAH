@@ -122,6 +122,20 @@ pub struct Alert {
     pub title: String,
     pub body: String,
     pub dismissed: bool,
+    /// Optional CTA URL. When present, the inline banner renders an
+    /// "Open" button that fires `webbrowser::open(action_url)`. Used by the
+    /// update-check alert to send the user to the GitHub release page (or,
+    /// if the wizard binary is locally available, to launch it in
+    /// `--update` mode — handled by the banner, not here).
+    #[serde(default)]
+    pub action_url: Option<String>,
+    /// Optional "open the wizard in update mode" affordance. When `true`,
+    /// the banner renders an "Update Now" button that spawns
+    /// `gadarah-wizard.exe --update`. When `action_url` is also set, the
+    /// banner renders both: the wizard button takes priority on click, the
+    /// URL button is the fallback.
+    #[serde(default)]
+    pub action_update_wizard: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -680,6 +694,8 @@ mod tests {
             title: "t".into(),
             body: body.into(),
             dismissed: false,
+            action_url: None,
+            action_update_wizard: false,
         }
     }
 
