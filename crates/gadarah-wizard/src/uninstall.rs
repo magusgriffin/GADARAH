@@ -236,7 +236,7 @@ fn remove_desktop_shortcut() -> Result<(), String> {
 
 #[cfg(windows)]
 fn remove_uninstall_registry() -> Result<(), String> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     match hkcu.delete_subkey_all(UNINSTALL_KEY) {
