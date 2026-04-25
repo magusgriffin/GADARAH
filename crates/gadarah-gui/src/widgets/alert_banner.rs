@@ -17,20 +17,22 @@ use crate::update_check;
 const AUTO_EXPIRE_SECS: i64 = 30;
 
 /// Render the alert banner as a TopBottomPanel if an un-dismissed, unexpired
-/// alert is present. Otherwise a zero-height no-op.
-pub fn show(ctx: &egui::Context, state: &AppState) {
+/// alert is present. Returns `Some(tab_idx)` when the user clicked an action
+/// that should switch tabs (e.g. "Open in Oracle"), so `main.rs` can update
+/// `selected_tab`. Otherwise returns `None`.
+pub fn show(ctx: &egui::Context, state: &AppState) -> Option<usize> {
     let now = chrono::Utc::now().timestamp();
 
-    // Find the newest un-dismissed alert. Update-prompt alerts ignore the
-    // 30 s expiry — they should stay until the user dismisses or applies
-    // them. Other alerts auto-expire.
-    let (idx, severity, title, body, action_url, action_update_wizard) = {
+    // Find the newest un-dismissed alert. Update-prompt and Oracle-advice
+    // alerts ignore the 30 s expiry — they should stay until the user
+    // dismisses or applies them. Other alerts auto-expire.
+    let (idx, severity, title, body, action_url, action_update_wizard, has_oracle_advice) = {
         let g = state.lock().unwrap();
         let hit = g.alerts.iter().enumerate().rev().find(|(_, a)| {
             if a.dismissed {
                 return false;
             }
-            if a.action_update_wizard || a.action_url.is_some() {
+            if a.action_update_wizard || a.action_url.is_some() || a.oracle_advice.is_some() {
                 return true;
             }
             now - a.timestamp < AUTO_EXPIRE_SECS
@@ -43,8 +45,9 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
                 a.body.clone(),
                 a.action_url.clone(),
                 a.action_update_wizard,
+                a.oracle_advice.is_some(),
             ),
-            None => return,
+            None => return None,
         }
     };
 
@@ -74,11 +77,13 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
     let mut dismiss = false;
     let mut update_now = false;
     let mut open_url_now = false;
-    let banner_height = if action_update_wizard || action_url.is_some() {
-        38.0
-    } else {
-        32.0
-    };
+    let mut open_in_oracle = false;
+    let banner_height =
+        if action_update_wizard || action_url.is_some() || has_oracle_advice {
+            38.0
+        } else {
+            32.0
+        };
     egui::TopBottomPanel::top("alert-banner")
         .exact_height(banner_height)
         .frame(
@@ -139,6 +144,20 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
                             open_url_now = true;
                         }
                     }
+                    if has_oracle_advice {
+                        ui.add_space(6.0);
+                        if ui
+                            .button(
+                                RichText::new("Open in Oracle")
+                                    .color(egui::Color32::WHITE)
+                                    .size(11.5)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            open_in_oracle = true;
+                        }
+                    }
                 });
             });
         });
@@ -169,4 +188,21 @@ pub fn show(ctx: &egui::Context, state: &AppState) {
     if dismiss {
         state.lock().unwrap().dismiss_alert(idx);
     }
+
+    if open_in_oracle {
+        // Pull the full advice into the Oracle panel via SharedState so
+        // the panel can render it on next frame. Tab-switch is signalled
+        // via the return value, which `main.rs` translates into a
+        // `selected_tab` update. Crate-internal const matches main.rs.
+        const ORACLE_TAB_IDX: usize = 7;
+        if let Ok(mut g) = state.lock() {
+            if let Some(advice) = g.alerts.get(idx).and_then(|a| a.oracle_advice.clone()) {
+                g.pending_oracle_review = Some(advice);
+            }
+            g.dismiss_alert(idx);
+        }
+        return Some(ORACLE_TAB_IDX);
+    }
+
+    None
 }

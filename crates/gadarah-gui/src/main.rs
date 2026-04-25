@@ -11,7 +11,7 @@ use gadarah_gui::{
     config::GadarahConfig,
     first_run,
     notifications::NotificationSettings,
-    oracle::{OracleConfig, OracleHandle, OracleReply},
+    oracle::{auto_prompt, OracleConfig, OracleHandle, OracleReply},
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
     ui::{
@@ -30,6 +30,9 @@ use gadarah_gui::{
 /// nudge, preflight "Fix" links, and dashboard CTA all jump to the same
 /// place if the tab order ever shifts.
 const CONFIG_TAB_IDX: usize = 8;
+/// Tab index of the Oracle tab — used by the "Open in Oracle" affordance
+/// on auto-prompt follow-up alerts in the banner.
+const ORACLE_TAB_IDX: usize = 7;
 
 struct GadarahApp {
     state: AppState,
@@ -49,6 +52,11 @@ struct GadarahApp {
     prev_tab: usize,
     /// Confirmation modal for toggling into live trading.
     pending_live_confirm: bool,
+    /// Auto-prompt watcher — diffs state against last frame and fires the
+    /// Oracle when an alert ≥ Warning surfaces or a regime flips on a
+    /// symbol with an open position. Runs on the UI loop; debounced
+    /// per-trigger-key.
+    auto_prompt: auto_prompt::AutoPromptWatcher,
 }
 
 impl GadarahApp {
@@ -74,6 +82,7 @@ impl GadarahApp {
             welcome: WelcomeOverlay::default(),
             prev_tab: 0,
             pending_live_confirm: false,
+            auto_prompt: auto_prompt::AutoPromptWatcher::default(),
         };
         app.initialize_demo_data();
         // First launch → show welcome overlay. Persisted in
@@ -95,11 +104,26 @@ impl GadarahApp {
         app
     }
 
-    /// Drain any oracle replies, route into panel + mascot.
+    /// Drain any oracle replies, route into panel + mascot. Auto-prompt
+    /// replies (tag `auto_prompt::AUTO_TAG`) bypass the panel and become
+    /// follow-up alerts in the alert feed instead.
     fn pump_oracle(&mut self) {
         for reply in self.oracle.drain() {
             match reply {
                 OracleReply::Ready(advice) => {
+                    if advice.tag() == auto_prompt::AUTO_TAG {
+                        // Auto-prompt reply: build a follow-up alert and
+                        // push into state. Mascot stays quiet for this
+                        // path — the alert banner is the surface.
+                        if let Some(title) = self.auto_prompt.take_pending_title() {
+                            let alert = auto_prompt::build_follow_up_alert(
+                                title,
+                                advice.body().to_string(),
+                            );
+                            self.state.lock().unwrap().push_alert(alert);
+                        }
+                        continue;
+                    }
                     self.oracle_panel.record_advice(&advice);
                     self.mascot
                         .set_mood(MascotSubsystem::Oracle, MascotMood::Watchful);
@@ -127,6 +151,11 @@ impl GadarahApp {
                 }
             }
         }
+    }
+
+    /// Per-frame: diff state and fire any new auto-prompt triggers.
+    fn pump_auto_prompt(&mut self) {
+        self.auto_prompt.tick(&self.state, &self.oracle.tx);
     }
 
     /// Derive per-subsystem mascot moods from the current shared state.
@@ -313,6 +342,7 @@ impl eframe::App for GadarahApp {
 
         // ── Background pumps ─────────────────────────────────────────────────
         self.pump_oracle();
+        self.pump_auto_prompt();
         self.refresh_mascot_moods();
         self.pump_trading_mascot_events();
         self.pump_tab_navigation();
@@ -338,7 +368,14 @@ impl eframe::App for GadarahApp {
         demo_banner::show(ctx, banner_status);
 
         // ── Alert banner (newest un-dismissed, auto-expires at 30s) ─────────
-        alert_banner::show(ctx, &self.state);
+        if let Some(tab_idx) = alert_banner::show(ctx, &self.state) {
+            // Banner returned a tab-switch request (e.g. "Open in Oracle"
+            // on an auto-prompt follow-up). Honour it before tab content
+            // renders this frame so the user lands on the right place.
+            self.selected_tab = tab_idx;
+            // Clamp via our named const to catch tab-order drift early.
+            debug_assert!(tab_idx == ORACLE_TAB_IDX);
+        }
 
         // ── Live-trading confirmation ───────────────────────────────────────
         // Fires on the first `ConnectedLive` tick of a session, AND whenever

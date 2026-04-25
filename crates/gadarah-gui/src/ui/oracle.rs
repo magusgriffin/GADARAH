@@ -82,6 +82,19 @@ impl OraclePanel {
         app_state: &AppState,
         tx: Option<&std::sync::mpsc::Sender<OracleRequest>>,
     ) {
+        // Consume any pending Oracle review handed off by the alert banner
+        // ("Open in Oracle" affordance on auto-prompt follow-ups). We
+        // append it to the transcript as if the Oracle had just spoken,
+        // so the user sees the full body when they land on the tab.
+        let pending_review = {
+            let mut g = app_state.lock().unwrap();
+            g.pending_oracle_review.take()
+        };
+        if let Some(advice) = pending_review {
+            self.transcript
+                .push((TranscriptRole::Oracle, advice));
+        }
+
         let snapshot = {
             let g = app_state.lock().unwrap();
             OracleContextSnapshot::from_shared_state(&g)

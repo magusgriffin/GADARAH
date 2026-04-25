@@ -156,6 +156,8 @@ fn run_check(state: AppState) {
         dismissed: false,
         action_url: Some(release.html_url),
         action_update_wizard: true,
+        oracle_advice: None,
+        suppress_os_notification: false,
     };
     if let Ok(mut g) = state.lock() {
         g.push_alert(alert);

@@ -112,7 +112,9 @@ pub fn dispatch(alert: &Alert, settings: &NotificationSettings) {
     if !settings.passes_threshold(alert.severity) {
         return;
     }
-    let want_os = settings.os_enabled;
+    // Respect per-alert suppression. Auto-prompt follow-ups carry this so
+    // the user doesn't get a second OS toast for the same event.
+    let want_os = settings.os_enabled && !alert.suppress_os_notification;
     let want_webhook = !settings.webhook_url.trim().is_empty();
     if !want_os && !want_webhook {
         return;
@@ -263,6 +265,8 @@ pub fn send_test(settings: &NotificationSettings) {
         dismissed: false,
         action_url: None,
         action_update_wizard: false,
+        oracle_advice: None,
+        suppress_os_notification: false,
     };
     // Send-test deliberately ignores the severity threshold so users can
     // confirm both channels even when min_severity is set high.
@@ -296,6 +300,8 @@ mod tests {
             dismissed: false,
             action_url: None,
             action_update_wizard: false,
+            oracle_advice: None,
+            suppress_os_notification: false,
         };
         let v = discord_payload(&alert);
         assert_eq!(v["embeds"][0]["color"], 0xDC2626);
@@ -315,6 +321,8 @@ mod tests {
             dismissed: false,
             action_url: None,
             action_update_wizard: false,
+            oracle_advice: None,
+            suppress_os_notification: false,
         };
         let v = slack_payload(&alert);
         let text = v["text"].as_str().unwrap();
@@ -332,6 +340,8 @@ mod tests {
             dismissed: false,
             action_url: None,
             action_update_wizard: false,
+            oracle_advice: None,
+            suppress_os_notification: false,
         };
         let v = generic_payload(&alert);
         assert_eq!(v["severity"], "info");
@@ -351,6 +361,8 @@ mod tests {
             dismissed: false,
             action_url: None,
             action_update_wizard: false,
+            oracle_advice: None,
+            suppress_os_notification: false,
         };
         dispatch(&alert, &s);
     }

@@ -13,6 +13,7 @@
 //!    Users can install heavier GGUFs, or point at a remote OpenAI-compatible
 //!    endpoint (Moonshot / OpenAI / Anthropic-compat gateways).
 
+pub mod auto_prompt;
 pub mod client;
 pub mod config;
 pub mod model;
