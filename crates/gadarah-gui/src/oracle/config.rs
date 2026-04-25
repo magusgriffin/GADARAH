@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::model::{ModelRegistry, ModelSpec};
+use super::prompt::default_system_preprompt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteEndpoint {
@@ -38,6 +39,9 @@ pub struct OracleConfig {
     pub temperature: f32,
     /// Soft token cap.
     pub max_tokens: u32,
+    /// Operator-editable Oracle charter / system prompt.
+    #[serde(default = "default_system_preprompt")]
+    pub system_preprompt: String,
     /// When false the Oracle is considered "sleeping" and no model calls are
     /// made. Useful for users without Ollama installed.
     pub enabled: bool,
@@ -52,6 +56,7 @@ impl Default for OracleConfig {
             remotes: Vec::new(),
             temperature: 0.2,
             max_tokens: 512,
+            system_preprompt: default_system_preprompt(),
             enabled: true,
         }
     }

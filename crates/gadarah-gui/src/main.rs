@@ -142,11 +142,7 @@ impl GadarahApp {
             MascotMood::Calm
         };
         // Reckoner (challenge clock)
-        let dd_pct_f: f32 = g
-            .max_drawdown_pct
-            .to_string()
-            .parse()
-            .unwrap_or(0.0);
+        let dd_pct_f: f32 = g.max_drawdown_pct.to_string().parse().unwrap_or(0.0);
         let reckoner_mood = if dd_pct_f > 8.0 {
             MascotMood::Alarmed
         } else if dd_pct_f > 4.0 {
@@ -343,11 +339,7 @@ impl eframe::App for GadarahApp {
         // the same modal so the user sees exactly one "are you sure" prompt.
         if matches!(banner_status, ConnectionStatus::ConnectedLive)
             && !self.pending_live_confirm
-            && !self
-                .state
-                .lock()
-                .unwrap()
-                .live_acknowledged
+            && !self.state.lock().unwrap().live_acknowledged
         {
             self.pending_live_confirm = true;
         }
@@ -531,7 +523,16 @@ impl eframe::App for GadarahApp {
                                     egui::Button::new(
                                         RichText::new(display).size(13.5).color(fg),
                                     )
-                                    .frame(false)
+                                    .fill(if selected {
+                                        egui::Color32::from_rgb(18, 28, 38)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    })
+                                    .stroke(if selected {
+                                        egui::Stroke::new(1.0, theme::ACCENT.linear_multiply(0.5))
+                                    } else {
+                                        egui::Stroke::NONE
+                                    })
                                     .min_size(egui::vec2(0.0, 44.0)),
                                 );
                                 if selected {
@@ -626,6 +627,7 @@ impl eframe::App for GadarahApp {
                                     7 => self.oracle_panel.show(
                                         ui,
                                         &mut self.oracle_cfg,
+                                        &state,
                                         Some(&self.oracle.tx),
                                     ),
                                     8 => self.config_panel.show(ui, &state),

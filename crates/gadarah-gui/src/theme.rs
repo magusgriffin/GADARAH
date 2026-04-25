@@ -368,15 +368,22 @@ pub fn big_stat(ui: &mut egui::Ui, value: &str, sublabel: &str, color: Color32) 
 
 /// Centered empty-state message with icon-like header
 pub fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(24.0);
-        ui.label(egui::RichText::new(icon).size(28.0).color(DIM));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(title).size(14.0).color(MUTED));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(subtitle).size(12.0).color(DIM));
-        ui.add_space(24.0);
-    });
+    egui::Frame::new()
+        .fill(Color32::from_rgb(12, 17, 24))
+        .stroke(Stroke::new(1.0, BORDER))
+        .corner_radius(8u8)
+        .inner_margin(Margin::same(18))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(icon).size(24.0).color(FORGE_GOLD_DIM));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(title).size(14.0).color(TEXT).strong());
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(subtitle).size(12.0).color(MUTED));
+                ui.add_space(8.0);
+            });
+        });
 }
 
 /// Stat card used in summary rows — compact, clean

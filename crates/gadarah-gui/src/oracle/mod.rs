@@ -16,10 +16,15 @@
 pub mod client;
 pub mod config;
 pub mod model;
+pub mod prompt;
 pub mod task;
 
 pub use config::{OracleConfig, RemoteEndpoint};
 pub use model::{ModelKind, ModelRegistry, ModelSpec};
+pub use prompt::{
+    default_system_preprompt, OracleContextSelection, OracleContextSnapshot,
+    DEFAULT_SYSTEM_PREPROMPT,
+};
 pub use task::{OracleHandle, OracleReply, OracleRequest};
 
 /// Sealed advice from the Oracle. Deliberately opaque: the outside world can

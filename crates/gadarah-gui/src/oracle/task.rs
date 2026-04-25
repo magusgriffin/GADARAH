@@ -10,14 +10,16 @@ use std::thread;
 
 use super::client::{self, OracleError};
 use super::config::OracleConfig;
+use super::prompt::{build_prompt, OracleContextSelection, OracleContextSnapshot};
 use super::OracleAdvice;
 
 pub enum OracleRequest {
     /// Analyse a free-form text blob (trade journal excerpt, current
     /// positions, etc.) and return a short assessment.
     Analyze {
-        system: String,
-        user: String,
+        question: String,
+        context_snapshot: Box<OracleContextSnapshot>,
+        context_selection: OracleContextSelection,
         tag: &'static str,
     },
     /// Refresh status (e.g. ping Ollama). Reply is always `Status`.
@@ -60,11 +62,7 @@ impl OracleHandle {
     }
 }
 
-fn worker(
-    mut cfg: OracleConfig,
-    req_rx: Receiver<OracleRequest>,
-    rep_tx: Sender<OracleReply>,
-) {
+fn worker(mut cfg: OracleConfig, req_rx: Receiver<OracleRequest>, rep_tx: Sender<OracleReply>) {
     while let Ok(req) = req_rx.recv() {
         match req {
             OracleRequest::Shutdown => return,
@@ -73,10 +71,23 @@ fn worker(
             }
             OracleRequest::Ping => {
                 let alive = client::ollama_alive(&cfg);
-                let _ = rep_tx.send(OracleReply::Status { ollama_alive: alive });
+                let _ = rep_tx.send(OracleReply::Status {
+                    ollama_alive: alive,
+                });
             }
-            OracleRequest::Analyze { system, user, tag } => {
-                match client::generate(&cfg, &system, &user) {
+            OracleRequest::Analyze {
+                question,
+                context_snapshot,
+                context_selection,
+                tag,
+            } => {
+                let prompt = build_prompt(
+                    &cfg.system_preprompt,
+                    &question,
+                    &context_selection,
+                    &context_snapshot,
+                );
+                match client::generate(&cfg, &prompt.system, &prompt.user) {
                     Ok(body) => {
                         let advice = OracleAdvice::new(body, tag);
                         let _ = rep_tx.send(OracleReply::Ready(advice));

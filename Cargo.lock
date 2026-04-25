@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-backtest"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "gadarah-broker",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-broker"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "bytes",
  "chrono",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-cli"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "ctrlc",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-core"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "proptest",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-data"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "gadarah-core",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-feed"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-gui"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "dirs",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-risk"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1289,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "gadarah-wizard"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "dirs",
  "eframe",
