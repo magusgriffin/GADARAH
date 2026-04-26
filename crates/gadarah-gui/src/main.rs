@@ -12,6 +12,7 @@ use gadarah_gui::{
     first_run,
     notifications::NotificationSettings,
     oracle::{auto_prompt, OracleConfig, OracleHandle, OracleReply},
+    single_instance,
     state::{AppState, ConnectionStatus, LogLevel, SharedState},
     theme,
     ui::{
@@ -25,6 +26,9 @@ use gadarah_gui::{
         mascot::{self, MascotMood, MascotState, MascotSubsystem},
     },
 };
+
+#[cfg(windows)]
+use gadarah_gui::tray;
 
 /// Tab index of the Config tab. Kept as a named constant so the Config
 /// nudge, preflight "Fix" links, and dashboard CTA all jump to the same
@@ -57,6 +61,14 @@ struct GadarahApp {
     /// symbol with an open position. Runs on the UI loop; debounced
     /// per-trigger-key.
     auto_prompt: auto_prompt::AutoPromptWatcher,
+    /// Optional system-tray handle — populated on Windows when the OS
+    /// accepts the icon. Drives "Show / Hide / Quit" menu actions and the
+    /// hide-to-tray-on-window-close behaviour.
+    #[cfg(windows)]
+    tray: Option<tray::TrayHandle>,
+    /// Set when the user requests a clean exit via the tray Quit menu.
+    /// Polled in `update()` so the close happens on the egui thread.
+    tray_quit_requested: bool,
 }
 
 impl GadarahApp {
@@ -83,6 +95,9 @@ impl GadarahApp {
             prev_tab: 0,
             pending_live_confirm: false,
             auto_prompt: auto_prompt::AutoPromptWatcher::default(),
+            #[cfg(windows)]
+            tray: tray::spawn(),
+            tray_quit_requested: false,
         };
         app.initialize_demo_data();
         // First launch → show welcome overlay. Persisted in
@@ -156,6 +171,32 @@ impl GadarahApp {
     /// Per-frame: diff state and fire any new auto-prompt triggers.
     fn pump_auto_prompt(&mut self) {
         self.auto_prompt.tick(&self.state, &self.oracle.tx);
+    }
+
+    /// Drain pending tray events (Show / Hide / Quit) on Windows. No-op
+    /// on other platforms because the tray module is cfg-gated.
+    #[allow(unused_variables)]
+    fn pump_tray(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            let Some(tray) = self.tray.as_ref() else {
+                return;
+            };
+            for evt in tray.drain() {
+                match evt {
+                    tray::TrayEvent::Show => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    tray::TrayEvent::Hide => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    }
+                    tray::TrayEvent::Quit => {
+                        self.tray_quit_requested = true;
+                    }
+                }
+            }
+        }
     }
 
     /// Derive per-subsystem mascot moods from the current shared state.
@@ -346,6 +387,21 @@ impl eframe::App for GadarahApp {
         self.refresh_mascot_moods();
         self.pump_trading_mascot_events();
         self.pump_tab_navigation();
+        self.pump_tray(ctx);
+
+        // Close-to-hide: if the user clicked the X on the GUI window AND
+        // the tray icon is active, hide the window instead of exiting so
+        // the daemon keeps running. The user re-opens via the tray menu.
+        // On Linux there's no tray, so this is a no-op and X behaves
+        // normally.
+        #[cfg(windows)]
+        if self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if self.tray_quit_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         // ── First-run welcome overlay (blocks interaction until dismissed) ──
         if self.state.lock().unwrap().show_welcome_overlay {
@@ -780,6 +836,25 @@ fn show_live_confirm(ctx: &egui::Context, app: &mut GadarahApp) {
 }
 
 fn main() -> eframe::Result<()> {
+    // Single-instance check first — refuse to start if another GADARAH
+    // GUI is already running. The held lock lives for the duration of
+    // `main` and is released when the process exits.
+    let _instance_lock = match single_instance::check() {
+        single_instance::InstanceCheck::First(lock) => Some(lock),
+        single_instance::InstanceCheck::AlreadyRunning => {
+            single_instance::notify_already_running();
+            tracing::warn!("GADARAH is already running — exiting");
+            return Ok(());
+        }
+        single_instance::InstanceCheck::Unavailable(reason) => {
+            // Fail open: if the OS denied the lock primitive (sandbox,
+            // missing /tmp, etc.), let the user through anyway. Worst
+            // case is they get two windows.
+            tracing::warn!(reason, "single-instance check unavailable; starting anyway");
+            None
+        }
+    };
+
     // Hydrate the process env from .env.* next to the binary (install dir).
     // `gadarah auth` writes these files and the CLI reads them via
     // std::env::var; without this hook the GUI can't see the credentials

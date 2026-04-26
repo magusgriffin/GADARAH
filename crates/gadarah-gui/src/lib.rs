@@ -7,8 +7,11 @@ pub mod config;
 pub mod first_run;
 pub mod notifications;
 pub mod oracle;
+pub mod single_instance;
 pub mod state;
 pub mod theme;
+#[cfg(windows)]
+pub mod tray;
 pub mod ui;
 pub mod update_check;
 pub mod widgets;

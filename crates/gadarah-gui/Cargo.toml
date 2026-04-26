@@ -1,6 +1,6 @@
 [package]
 name = "gadarah-gui"
-version = "2.3.0"
+version = "2.4.0"
 edition = "2021"
 
 [dependencies]
@@ -48,8 +48,22 @@ dotenvy = { workspace = true }
 # Linux libnotify/dbus, macOS NotificationCenter — all from one crate.
 notify-rust = "4"
 
+# Single-instance lock (Phase 2 D). Named mutex on Windows, abstract Unix
+# socket on Linux. Detects an already-running GUI and lets the second
+# invocation exit cleanly instead of spawning a duplicate.
+single-instance = "0.3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.31", default-features = false, features = ["x11", "wayland"] }
+
+# System tray icon (Phase 2 C). Windows uses Shell_NotifyIcon — no extra
+# runtime needed beyond a win32 message pump. Linux is intentionally
+# excluded for now: tray-icon needs gtk-init on a dedicated thread, and
+# Wayland tray support is unreliable across compositors. Linux users get
+# the single-instance lock instead. macOS support depends on demand.
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 default = []
